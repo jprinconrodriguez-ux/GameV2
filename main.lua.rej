@@ -1,0 +1,64 @@
+--- main.lua	
++++ main.lua	
+@@ -248,7 +248,7 @@ local function jokerAtPosition(x, y)
+   return nil
+ end
+ 
+--- === CHECKLIST / WIN HELPERS ===
++-- === CHECKLIST HELPER ===
+ local function isAllMarked()
+   for _, name in ipairs(Rules.CATEGORIES) do
+     if not GS.playedHands[name] then return false end
+@@ -256,13 +256,6 @@ local function isAllMarked()
+   return true
+ end
+ 
+-local function tryWin()
+-  if isAllMarked() then
+-    GS.phase = "WIN"
+-    setStatus("🎉 You completed all categories! Press R to restart.")
+-  end
+-end
+-
+ -- === TURN HELPERS ===
+ 
+ local function enterEndPhase()
+@@ -582,14 +575,6 @@ function love.keypressed(key)
+     if key == "return" or key == "kpenter" then advanceThreshold() end
+     return
+   end
+-  -- (SPACE disabled: auto-advance)
+-  if false then
+-    if GS.phase == "END" then
+-      nextTurn()
+-      return
+-    end
+-  end
+-
+   if key == "return" or key == "kpenter" then
+     if GS.phase == "WIN" then
+       setStatus("Game won—press R to restart.")
+@@ -647,14 +632,16 @@ function love.keypressed(key)
+       if Jokers then Jokers.on_hand_played(S, love.math) end
+ 
+       -- Threshold completion check (T1–T3)
+-      local completed = false
+-      local tgt = Scoring and Scoring.target_for and Scoring.target_for(S.meta.threshold) or nil
+-      if Scoring and Scoring.is_threshold_complete and Scoring.is_threshold_complete(S) then
+-        completed = true
+-      end
+-      if completed then
++      -- Win requires BOTH reaching the score target AND completing all 8 categories (T3 only).
++      local scoreReached = Scoring and Scoring.is_threshold_complete and Scoring.is_threshold_complete(S)
++      local isT3Win = scoreReached and (S.meta.threshold == 3) and isAllMarked()
++      local completed = scoreReached and ((S.meta.threshold ~= 3) or isT3Win)
++      if isT3Win then
++        GS.phase = "THRESHOLD"
++        UI.overlay = { kind = "win", message = "You Win!" }
++      elseif completed then
+         GS.phase = "THRESHOLD"
+-        UI.overlay = { kind = (S.meta.threshold == 3) and "win" or "threshold", message = (S.meta.threshold == 3) and "You Win!" or "Threshold completed" }
++        UI.overlay = { kind = "threshold", message = "Threshold completed" }
+       else
+         enterEndPhase()
+       end
