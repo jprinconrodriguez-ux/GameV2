@@ -122,46 +122,67 @@ do
 end
 print("Penalty values test: passed")
 
--- ── 6. Joker pool composition ─────────────────────────────────────────────────
--- NOTE: This test will FAIL until Milestone 2 fills all 22 jokers.
--- It is here to document the target. Comment it out to run M1 cleanly,
--- then uncomment when M2 is complete.
---[[
+-- ── 2.1: Attack probability tables match spec ────────────────────────────────
 do
-  local REG = require("joker_registry")
+  local expected = {
+    [2] = { ["High Card"]=19,["Pair"]=16,["Two Pair"]=14,["Three of a Kind"]=12,["Flush"]=14,["Straight"]=10,["Full House"]=9,["Four of a Kind"]=6 },
+    [3] = { ["High Card"]=17,["Pair"]=14,["Two Pair"]=12,["Three of a Kind"]=10,["Flush"]=16,["Straight"]=12,["Full House"]=11,["Four of a Kind"]=8 },
+  }
+  for t,exp in pairs(expected) do
+    local probs = Attacks.probs_for_threshold(t)
+    for hand,v in pairs(exp) do
+      assert(probs[hand] == v, "T"..t.." mismatch on "..hand..": expected "..v.." got "..tostring(probs[hand]))
+    end
+  end
+end
+print("2.1 Attack probability tables: passed")
+
+-- ── 2.2: Penalty formula matches spec ────────────────────────────────────────
+do
+  local S = {}
+  Scoring.init(S)
+  local cases = {
+    { hand="High Card",      t=1, expected=2  },
+    { hand="High Card",      t=2, expected=5  },
+    { hand="High Card",      t=3, expected=12 },
+    { hand="Pair",           t=1, expected=4  },
+    { hand="Pair",           t=2, expected=9  },
+    { hand="Pair",           t=3, expected=21 },
+    { hand="Four of a Kind", t=1, expected=32 },
+    { hand="Four of a Kind", t=2, expected=72 },
+    { hand="Four of a Kind", t=3, expected=162},
+  }
+  for _, c in ipairs(cases) do
+    S.meta.threshold = c.t
+    S.meta.score = 0
+    local pts = Scoring.apply_penalty(S, c.hand)
+    assert(pts == c.expected, "Penalty mismatch "..c.hand.." T"..c.t..": expected "..c.expected.." got "..tostring(pts))
+    S.meta.score = 0
+  end
+end
+print("2.2 Penalty formula: passed")
+
+-- ── 2.3: Joker pool total and per-rarity counts match spec ───────────────────
+do
   local S = {}
   Jokers.init(S, love.math)
-  -- Full Rule Book pool: 20 common + 15 uncommon + 12 rare + 12 epic + 16 legendary + 9 mythic = 84
-  assert(#S.jokers.pool == 84,
-    "Pool size mismatch: got "..#S.jokers.pool..", expected 84")
+  -- Total pool should be 84
+  assert(#S.jokers.pool == 84, "Pool size mismatch: expected 84, got "..#S.jokers.pool)
   -- Count by rarity
   local counts = {}
   for _, id in ipairs(S.jokers.pool) do
-    local def = REG.by_id[id]
-    local r = def and def.rarity or "unknown"
-    counts[r] = (counts[r] or 0) + 1
+    local def = require("joker_registry").by_id[id]
+    assert(def, "Unknown joker id in pool: "..tostring(id))
+    counts[def.rarity] = (counts[def.rarity] or 0) + 1
   end
-  assert(counts.common    == 20, "common mismatch: "..tostring(counts.common))
-  assert(counts.uncommon  == 15, "uncommon mismatch: "..tostring(counts.uncommon))
-  assert(counts.rare      == 12, "rare mismatch: "..tostring(counts.rare))
-  assert(counts.epic      == 12, "epic mismatch: "..tostring(counts.epic))
-  assert(counts.legendary == 16, "legendary mismatch: "..tostring(counts.legendary))
-  assert(counts.mythic    ==  9, "mythic mismatch: "..tostring(counts.mythic))
+  assert(counts.common    == 20, "common count wrong: "    ..tostring(counts.common))
+  assert(counts.uncommon  == 15, "uncommon count wrong: "  ..tostring(counts.uncommon))
+  assert(counts.rare      == 12, "rare count wrong: "      ..tostring(counts.rare))
+  assert(counts.epic      == 12, "epic count wrong: "      ..tostring(counts.epic))   -- 2 types × 6
+  assert(counts.legendary == 16, "legendary count wrong: " ..tostring(counts.legendary)) -- 8 types × 2
+  assert(counts.mythic    ==  9, "mythic count wrong: "    ..tostring(counts.mythic))  -- 9 types × 1
 end
-print("Joker pool composition test: passed")
---]]
-print("Joker pool composition test: SKIPPED (uncomment after M2)")
-
--- ── 6b. Joker pool count (current registry) ──────────────────────────────────
--- Only 2 jokers registered so far (1 common, 1 uncommon).
--- Pool = (1 × 20) + (1 × 15) = 35. Updated to 84 in M2.2 once all 22 are wired.
-do
-  local S = {}
-  Jokers.init(S, love.math)
-  assert(#S.jokers.pool == 35,
-    "Pool size mismatch: got "..#S.jokers.pool..", expected 35")
-end
-print("Joker pool count test (current registry): passed")
+print("2.3 Joker pool composition: passed")
 
 -- ── 7. Save/Load round trip ───────────────────────────────────────────────────
 do

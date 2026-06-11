@@ -3,6 +3,11 @@
 
 local E = {}
 
+-- Safe stub for jokers whose effects are not yet implemented.
+function E.noop(state, ctx)
+  return { ok=true, msg="(Not yet implemented)" }
+end
+
 -- Example: Bicycle (Draw 3)
 function E.draw3(state, ctx)
   if state.drawCards then state.drawCards(3) end
