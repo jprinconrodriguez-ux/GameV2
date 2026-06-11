@@ -152,6 +152,17 @@ print("Joker pool composition test: passed")
 --]]
 print("Joker pool composition test: SKIPPED (uncomment after M2)")
 
+-- ── 6b. Joker pool count (current registry) ──────────────────────────────────
+-- Only 2 jokers registered so far (1 common, 1 uncommon).
+-- Pool = (1 × 20) + (1 × 15) = 35. Updated to 84 in M2.2 once all 22 are wired.
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  assert(#S.jokers.pool == 35,
+    "Pool size mismatch: got "..#S.jokers.pool..", expected 35")
+end
+print("Joker pool count test (current registry): passed")
+
 -- ── 7. Save/Load round trip ───────────────────────────────────────────────────
 do
   local deck = Deck.new(1)

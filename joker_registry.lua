@@ -13,8 +13,8 @@ R.all = {
   -- { id="food",   name="Food",   rarity="legendary", jtype="passive", effect="hand_cap_plus1" },
 }
 
--- How many copies of each rarity enter the pool (placeholder until 3.3 math is finalized).
--- You can swap these counts with your rulebook numbers without touching core code.
+-- How many copies of each rarity (per distinct type) enter the pool.
+-- Source of truth: Rule Book — Joker Deck Composition (copies per type).
 R.rarity_counts = {
   common    = 20,
   uncommon  = 15,
