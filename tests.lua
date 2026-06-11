@@ -225,4 +225,70 @@ do
 end
 print("Save/Load round trip test: passed")
 
+-- 2.4: Joker effects
+local FX = require("joker_effects")
+local JReg = require("joker_registry")
+
+-- bee: removes least rare joker, hand shrinks by 1
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.hand = { "bicycle", "skull" }  -- common, uncommon
+  local gained = {}
+  local ctx = { rng = love.math, gain_from_pool = function(n)
+    for i=1,n do table.insert(gained, "test_joker") end
+  end }
+  local r = FX.bee(S, ctx)
+  assert(r.ok, "bee should succeed")
+  -- bicycle (common) should be discarded; skull remains
+  assert(S.jokers.hand[1] == "skull", "bee should discard least rare (bicycle)")
+  assert(#gained == 2, "bee should draw 2 jokers")
+end
+print("2.4 bee effect: passed")
+
+-- fibonacci: gains jokers equal to checklist count
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  local gained = {}
+  local ctx = {
+    rng = love.math,
+    playedHands = { ["Pair"]=true, ["Flush"]=true, ["High Card"]=true },
+    gain_from_pool = function(n)
+      for i=1,n do table.insert(gained, "x") end
+    end
+  }
+  local r = FX.fibonacci(S, ctx)
+  assert(r.ok, "fibonacci should succeed")
+  assert(#gained == 3, "fibonacci should gain 3 jokers (one per marked hand)")
+end
+print("2.4 fibonacci effect: passed")
+
+-- steal: sets pending state correctly
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  Jokers.gain_from_pool(S, 0, love.math)  -- ensure pool exists
+  -- manually seed the pool with known ids
+  S.jokers.pool = { "bicycle", "skull", "steal" }
+  local r = FX.steal(S, {})
+  assert(r.ok, "steal should succeed")
+  assert(S.jokers.steal_choice_pending == true, "steal should set pending flag")
+  assert(#S.jokers.steal_pending.ids == 2, "steal should reveal 2 jokers")
+  assert(#S.jokers.pool == 1, "steal should remove 2 from pool")
+end
+print("2.4 steal effect: passed")
+
+-- angel: sets pending state correctly
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.hand = { "bicycle", "skull" }
+  local r = FX.angel(S, {})
+  assert(r.ok, "angel should succeed")
+  assert(S.jokers.angel_choice_pending == true, "angel should set pending flag")
+  assert(#S.jokers.angel_pending.ids == 2, "angel should store current hand")
+end
+print("2.4 angel effect: passed")
+
 print("\nAll M1 tests passed.")

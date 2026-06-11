@@ -715,7 +715,15 @@ function love.keypressed(key)
     elseif S.jokers.used_this_turn then
       setStatus("Joker already used this turn.")
     else
-      local res = Jokers.use(S, idx, {source="key"})
+      local ctx = {
+        source         = "key",
+        rng            = love.math,
+        deck           = deck,
+        hand           = hand,
+        playedHands    = GS.playedHands,
+        gain_from_pool = function(n) Jokers.gain_from_pool(S, n, love.math) end,
+      }
+      local res = Jokers.use(S, idx, ctx)
       selectedJoker = nil
       if res and res.msg then
         setStatus(res.msg)
