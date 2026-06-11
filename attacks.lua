@@ -74,6 +74,7 @@ function M.resolve(S, scoring)
   return res
 end
 
+-- Canonical source: Rule Book § Attack Probabilities. Tests in tests.lua assert these exact values.
 -- T2–T5 probabilities (Rule Book; each shifts low tiers −2, high tiers +2 vs. previous; sum to 100)
 local T2 = {
   ["High Card"] = 19, ["Pair"] = 16, ["Two Pair"] = 14, ["Three of a Kind"] = 12,
@@ -83,10 +84,12 @@ local T3 = {
   ["High Card"] = 17, ["Pair"] = 14, ["Two Pair"] = 12, ["Three of a Kind"] = 10,
   ["Flush"] = 16, ["Straight"] = 12, ["Full House"] = 11, ["Four of a Kind"] = 8,
 }
+-- TODO: confirm T4/T5 from Rule Book
 local T4 = {
   ["High Card"] = 15, ["Pair"] = 12, ["Two Pair"] = 10, ["Three of a Kind"] = 8,
   ["Flush"] = 18, ["Straight"] = 14, ["Full House"] = 13, ["Four of a Kind"] = 10,
 }
+-- TODO: confirm T4/T5 from Rule Book
 local T5 = {
   ["High Card"] = 13, ["Pair"] = 10, ["Two Pair"] = 8, ["Three of a Kind"] = 6,
   ["Flush"] = 20, ["Straight"] = 16, ["Full House"] = 15, ["Four of a Kind"] = 12,

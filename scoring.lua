@@ -31,15 +31,15 @@ function M.get_award(threshold, hand_name)
   return base * mult
 end
 
--- Penalty progression per Rule Book:
--- T1 Penalty = 2 × (T1 award)
--- T2 Penalty = ceil(T1 Penalty × 2.25)
--- T3 Penalty = ceil(T2 Penalty × 2.25)
--- T4+ Penalty = ceil(previous threshold penalty × 2.25)
+-- Canonical formula (Rule Book § Penalties):
+--   T1 = 2 × (T1 award). Each subsequent threshold = ceil(previous × 2.25).
+--   Always compounds from T1 base, NOT from the current threshold's award.
 local function penalty_for_threshold(t, hand_name)
   t = clamp_threshold(t)
-  local base = BASE_AWARD_T1[hand_name] or 0
-  local cur = 2 * base  -- T1 penalty
+  -- T1 base: always 2 × T1 award (Rule Book canonical formula)
+  local base = M.get_award(1, hand_name) * 2
+  if t == 1 then return base end
+  local cur = base
   for k = 2, t do
     cur = math.ceil(cur * 2.25)
   end

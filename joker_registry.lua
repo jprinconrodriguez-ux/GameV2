@@ -5,6 +5,7 @@
 local R = {}
 
 -- Minimal seed set to validate the core loop. Expand in 3.3.
+-- TODO M2: fill remaining 20 jokers
 R.all = {
   { id="bicycle",   name="Bicycle", rarity="common",    jtype="active",   effect="draw3" },
   { id="skull",     name="Skull",   rarity="uncommon",  jtype="active",   effect="cancel_attack" },
@@ -16,9 +17,9 @@ R.all = {
 -- You can swap these counts with your rulebook numbers without touching core code.
 R.rarity_counts = {
   common    = 20,
-  uncommon  = 12,
-  rare      =  8,
-  epic      =  4,
+  uncommon  = 15,
+  rare      = 12,
+  epic      =  6,
   legendary =  2,
   mythic    =  1,
 }
