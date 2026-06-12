@@ -204,6 +204,13 @@ do
 
   local saved = SaveLoad.build_state(deck, hand, GS, S, UI)
 
+  -- Record exact joker hand contents before applying state.
+  local saved_joker_hand = {}
+  for i = 1, #saved.jokers.hand do saved_joker_hand[i] = saved.jokers.hand[i] end
+  local saved_used_this_turn = saved.jokers.used_this_turn
+  local saved_pool_size = #saved.jokers.pool
+  local saved_played_pile_size = #saved.jokers.played_pile
+
   deck = Deck.new(1)
   hand = deck:draw(3)
   GS:reset()
@@ -220,7 +227,13 @@ do
   assert(GS.limits.discard_used == true,   "discard flag lost")
   assert(#deck.discard == 1,               "discard pile mismatch")
   assert(S.combat.current_attack == saved.gs.current_attack, "attack mismatch")
-  assert(#S.jokers.hand == #saved.jokers.hand, "joker hand mismatch")
+  assert(#S.jokers.hand == #saved_joker_hand, "joker hand size mismatch")
+  for i = 1, #saved_joker_hand do
+    assert(S.jokers.hand[i] == saved_joker_hand[i], "joker hand[" .. i .. "] mismatch")
+  end
+  assert(S.jokers.used_this_turn == saved_used_this_turn, "used_this_turn mismatch")
+  assert(#S.jokers.pool == saved_pool_size, "joker pool size mismatch")
+  assert(#S.jokers.played_pile == saved_played_pile_size, "joker played_pile size mismatch")
   assert(#hand == #saved.hand,             "hand size mismatch")
 end
 print("Save/Load round trip test: passed")

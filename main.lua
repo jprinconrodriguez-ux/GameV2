@@ -37,6 +37,9 @@ local BTN_LOAD   = {x=500, y=330, w=90,  h=30, label="Load"}
 local BTN_NEXT_T = {x=0, y=0, w=140, h=36, label="Next"}
 
 -- SAVE/LOAD
+-- Bare filename (no leading "/" or "./"): love.filesystem resolves this to LÖVE's
+-- persistent save directory (see love.filesystem.getSaveDirectory()), so the save
+-- survives quit/relaunch across sessions.
 local SAVE_SLOT = "save_slot_1.lua"  -- saved as Lua table (return { ... })
 
 -- Tiny Lua serializer (acyclic tables with string/number/boolean/nil)
