@@ -45,6 +45,8 @@ local function build_pool_from_registry(rng)
   return pool
 end
 
+-- Returns the joker hand cap (base 5, extendable by modifiers).
+-- This is separate from the card hand cap (HAND_MAX = 20 in main.lua).
 local function current_hand_cap(state)
   local base = 5
   local bonus = 0

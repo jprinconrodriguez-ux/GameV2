@@ -22,11 +22,13 @@ function E.cancel_attack(state, ctx)
   return { ok=true, msg="Canceled the current attack." }
 end
 
--- Example hook for Food Joker passive (hand cap +1 while in hand)
-function E.hand_cap_plus1(state, ctx)
+-- Food Joker passive: sets a flag that allows drawN to bypass HAND_MAX this turn.
+-- (Card hand cap bypass — distinct from the joker hand cap of 5.)
+function E.food_passive(state, ctx)
   state.jokers.modifiers = state.jokers.modifiers or {}
-  state.jokers.modifiers.hand_cap_bonus = (state.jokers.modifiers.hand_cap_bonus or 0) + 1
-  return { ok=true }
+  state.jokers.modifiers.food_bypass_active = true
+  state.jokers.modifiers.food_draw_count = 10
+  return { ok = true }
 end
 
 -- Rarity ordering (least rare → most rare). Used by Bee to pick a discard.

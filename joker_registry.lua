@@ -18,7 +18,7 @@ R.all = {
   { id="cybernetic",  name="Cybernetic",    rarity="legendary", jtype="active",    effect="noop"           },  -- TODO(M4): needs timed effect system
   { id="trader",      name="The Trader",    rarity="legendary", jtype="active",    effect="noop"           },  -- TODO(M4): needs scoring hook
   { id="bee",         name="The Bee",       rarity="legendary", jtype="active",    effect="bee"            },
-  { id="food",        name="Food Joker",    rarity="legendary", jtype="passive",   effect="hand_cap_plus1" },
+  { id="food",        name="Food Joker",    rarity="legendary", jtype="passive",   effect="food_passive"   },
   { id="fibonacci",   name="Fibonacci",     rarity="mythic",    jtype="active",    effect="fibonacci"      },
   { id="invisible",   name="Invisible",     rarity="mythic",    jtype="active",    effect="noop"           },  -- TODO(M4): needs deck-search UI hook
   { id="devil",       name="Devil Joker",   rarity="mythic",    jtype="active",    effect="noop"           },  -- TODO(M4): needs boss system

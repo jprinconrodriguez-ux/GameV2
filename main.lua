@@ -11,6 +11,7 @@ local SaveLoad = require("saveload")
 
 -- === CONSTANTS (safe defaults) ===
 local HAND_START = HAND_START or 10   -- starting hand size
+-- Card hand cap (max cards held). Separate from the joker hand cap (max 5, in jokers.lua).
 local HAND_MAX   = HAND_MAX   or 20   -- absolute cap
 local NUM_DECKS  = NUM_DECKS  or 2    -- SP default; MP later = players + 1
 
@@ -120,10 +121,16 @@ local function can_draw(n)
 end
 
 local function drawN(n)
+  -- Food Joker passive: if food_bypass_active, temporarily lift the card hand cap for this draw only.
+  local effective_max = HAND_MAX or 20
+  if S and S.jokers and S.jokers.modifiers and S.jokers.modifiers.food_bypass_active then
+    effective_max = (HAND_MAX or 20) + (S.jokers.modifiers.food_draw_count or 10)
+    S.jokers.modifiers.food_bypass_active = false  -- consume the bypass (one draw action only)
+  end
   local drawnCount = 0
   if deck and deck.cards and #deck.cards == 0 then reshuffle_discard_into_deck() end
   for _ = 1, (n or 0) do
-    if getHandSize() >= (HAND_MAX or 20) then break end
+    if getHandSize() >= effective_max then break end
     local d = deck:draw(1)
     if #d == 0 then break end
     table.insert(hand, d[1])
@@ -142,7 +149,13 @@ end
 S.drawCards = drawN
 
 local function drawUpTo(target)
-  target = math.min(target or HAND_START, HAND_MAX)
+  -- Food Joker passive: if food_bypass_active, temporarily lift the card hand cap for this draw only.
+  local effective_max = HAND_MAX or 20
+  if S and S.jokers and S.jokers.modifiers and S.jokers.modifiers.food_bypass_active then
+    effective_max = (HAND_MAX or 20) + (S.jokers.modifiers.food_draw_count or 10)
+    S.jokers.modifiers.food_bypass_active = false  -- consume the bypass (one draw action only)
+  end
+  target = math.min(target or HAND_START, effective_max)
   local total = 0
   while getHandSize() < target do
     if deck and deck.cards and #deck.cards == 0 then reshuffle_discard_into_deck() end
@@ -187,6 +200,7 @@ local function advanceThreshold()
   local nextT = math.min(5, cur + 1)
   S.meta.threshold = nextT
   if Scoring and Scoring.reset_for_next_threshold then Scoring.reset_for_next_threshold(S) end
+  -- Joker hand intentionally NOT reset here; jokers carry over between thresholds per the rules.
   mergePilesIntoDeck()
   UI.overlay = nil
   GS.phase = "MAIN"

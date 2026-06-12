@@ -304,4 +304,20 @@ do
 end
 print("2.4 angel effect: passed")
 
+-- ── Joker cap overflow test ──────────────────────────────────────────────────
+-- Rule Book: max 5 jokers in hand; jokers gained while at cap overflow to the
+-- played pile (so they can recycle later), they must NOT grow the hand past 5.
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  -- Force the hand to already sit at the cap of 5.
+  S.jokers.hand = { "bicycle", "bicycle", "bicycle", "bicycle", "bicycle" }
+  local played_before = #S.jokers.played_pile
+  -- Attempt to gain a 6th joker.
+  Jokers.gain_from_pool(S, 1, love.math)
+  assert(#S.jokers.hand == 5, "joker hand grew past cap: got "..#S.jokers.hand)
+  assert(#S.jokers.played_pile >= played_before + 1, "overflow joker did not land in played_pile")
+end
+print("Joker cap overflow test: passed")
+
 print("\nAll M1 tests passed.")
