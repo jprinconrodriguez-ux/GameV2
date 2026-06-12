@@ -32,8 +32,19 @@ local function pick_rarity(rng)
   for rarity, _ in pairs(REG.rarity_weights) do return rarity end
 end
 
+-- Draw a single joker ID at random from the infinite probability pool: pick a
+-- rarity by weighted random (REG.rarity_weights), then a uniformly random joker
+-- of that rarity from the registry. Returns nil if no joker of the chosen rarity
+-- exists yet (safe fallback). Duplicates are allowed.
+function J.draw_random_joker(rng)
+  local rarity = pick_rarity(rng)
+  local ids = REG.ids_by_rarity()[rarity]
+  if not ids or #ids == 0 then return nil end
+  return ids[rand_int(rng, 1, #ids)]
+end
+
 -- Returns the joker hand cap (base 5, extendable by modifiers).
--- This is separate from the card hand cap (HAND_MAX = 20 in main.lua).
+-- This is separate from the card hand cap (HAND_MAX = 15 in main.lua).
 local function current_hand_cap(state)
   local base = 5
   local bonus = 0
@@ -84,21 +95,25 @@ function J.use(state, hand_index, ctx)
   return result
 end
 
--- Gain n jokers by weighted random rarity draw (Rule Book § Joker Rarity
--- Draw Probabilities). There is no physical pool: each draw picks a rarity by
--- weight, then a uniformly random joker of that rarity from the registry.
+-- Gain a single joker by weighted random rarity draw. Respects the joker hand
+-- cap (base 5 + bonuses); a draw made while at cap is dropped. Returns the joker
+-- ID that was added, or nil if none was added (at cap, or empty rarity bucket).
+function J.gain_joker(state, rng)
+  if #state.jokers.hand >= current_hand_cap(state) then return nil end
+  local jid = J.draw_random_joker(rng)
+  if jid then table.insert(state.jokers.hand, jid) end
+  return jid
+end
+
+-- Gain n jokers by weighted random rarity draw (Rule Book § Joker Rarity Draw
+-- Probabilities). There is no physical pool: each draw picks a rarity by weight,
+-- then a uniformly random joker of that rarity from the registry. Kept for
+-- backward compatibility with callers that gain several jokers at once.
 function J.gain_from_pool(state, n, rng)
   n = n or 1
-  local by_r = REG.ids_by_rarity()
   for _=1,n do
-    -- Respect (cap + bonuses). Draws while at cap are dropped.
-    local cap = current_hand_cap(state)
-    if #state.jokers.hand >= cap then break end
-    local rarity = pick_rarity(rng)
-    local ids = by_r[rarity]
-    if ids and #ids > 0 then
-      local jid = ids[rand_int(rng, 1, #ids)]
-      table.insert(state.jokers.hand, jid)
+    if J.gain_joker(state, rng) == nil and #state.jokers.hand >= current_hand_cap(state) then
+      break  -- stop early once the hand is full
     end
   end
 end

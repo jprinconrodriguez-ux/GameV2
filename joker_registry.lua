@@ -18,7 +18,7 @@ R.all = {
   { id="cybernetic",  name="Cybernetic",    rarity="legendary", jtype="active",    effect="noop"           },  -- TODO(M4): needs timed effect system
   { id="trader",      name="The Trader",    rarity="legendary", jtype="active",    effect="noop"           },  -- TODO(M4): needs scoring hook
   { id="bee",         name="The Bee",       rarity="legendary", jtype="active",    effect="bee"            },
-  { id="food",        name="Food Joker",    rarity="legendary", jtype="passive",   effect="food_passive"   },
+  { id="food",        name="Food Joker",    rarity="legendary", jtype="passive",   effect="hand_cap_plus3" },
   { id="fibonacci",   name="Fibonacci",     rarity="mythic",    jtype="active",    effect="fibonacci"      },
   { id="invisible",   name="Invisible",     rarity="mythic",    jtype="active",    effect="noop"           },  -- TODO(M4): needs deck-search UI hook
   { id="devil",       name="Devil Joker",   rarity="mythic",    jtype="active",    effect="noop"           },  -- TODO(M4): needs boss system
@@ -30,15 +30,19 @@ R.all = {
   { id="peacock",     name="Peacock Joker", rarity="mythic",    jtype="active",    effect="noop"           },  -- TODO(M4): needs timed effect system
 }
 
--- Weighted draw probabilities per rarity (must sum to 100).
--- Source of truth: Rule Book — Joker Rarity Draw Probabilities.
+-- Weighted draw probabilities per rarity. These are the *copy counts* of each
+-- rarity in the full 84-card joker deck (Rule Book § Joker Deck Composition):
+--   common 20, uncommon 15, rare 12, epic 12 (2 types × 6), legendary 16
+--   (8 types × 2), mythic 9 (9 types × 1) → 84 total.
+-- They are used directly as relative weights when picking a rarity, so the draw
+-- probabilities match the deck distribution (e.g. common ≈ 20/84 ≈ 23.8%).
 R.rarity_weights = {
-  common    = 33,
-  uncommon  = 26,
-  rare      = 19,
-  epic      = 13,
-  legendary =  6,
-  mythic    =  3,
+  common    = 20,
+  uncommon  = 15,
+  rare      = 12,
+  epic      = 12,
+  legendary = 16,
+  mythic    =  9,
 }
 
 -- Utility: list of IDs by rarity

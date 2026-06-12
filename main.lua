@@ -12,7 +12,7 @@ local SaveLoad = require("saveload")
 -- === CONSTANTS (safe defaults) ===
 local HAND_START = HAND_START or 7    -- starting hand size
 -- Card hand cap (max cards held). Separate from the joker hand cap (max 5, in jokers.lua).
-local HAND_MAX   = HAND_MAX   or 20   -- absolute cap
+local HAND_MAX   = HAND_MAX   or 15   -- absolute cap
 local NUM_DECKS  = NUM_DECKS  or 2    -- SP default; MP later = players + 1
 
 -- === STATE ===
@@ -115,8 +115,29 @@ local function getHandSize()
   if type(hand) == "table" then return #hand else return 0 end
 end
 
+-- Losing mechanic (v3.1): the run ends in a loss if the main deck is fully
+-- depleted with nothing left to reshuffle AND the player has not yet met the
+-- score target AND played every hand category at least once.
+local function triggerLoss()
+  GS.phase = "LOSS"
+  setStatus("Deck depleted — run over.")
+  UI.overlay = { kind = "loss", message = "Deck Depleted!\nYou ran out of cards." }
+end
+
+-- Call after a draw could not be satisfied. If both the main deck and the
+-- discard pile are empty (the played pile stays locked until threshold advance)
+-- and neither win condition is met, end the run as a loss.
+local function maybeTriggerDepletion()
+  if not deck or not deck.cards or not deck.discard then return end
+  if #deck.cards > 0 or #deck.discard > 0 then return end
+  if GS.phase == "WIN" or GS.phase == "LOSS" or GS.phase == "THRESHOLD" then return end
+  local won = Scoring and Scoring.is_threshold_complete and Scoring.is_threshold_complete(S)
+              and Rules and Rules.isAllMarked and Rules.isAllMarked(GS)
+  if not won then triggerLoss() end
+end
+
 local function can_draw(n)
-  local hand_max = HAND_MAX or 20
+  local hand_max = HAND_MAX or 15
   local free = hand_max - getHandSize()
   if free < 0 then free = 0 end
   if n == nil or n < 0 then n = 0 end
@@ -124,12 +145,7 @@ local function can_draw(n)
 end
 
 local function drawN(n)
-  -- Food Joker passive: if food_bypass_active, temporarily lift the card hand cap for this draw only.
-  local effective_max = HAND_MAX or 20
-  if S and S.jokers and S.jokers.modifiers and S.jokers.modifiers.food_bypass_active then
-    effective_max = (HAND_MAX or 20) + (S.jokers.modifiers.food_draw_count or 10)
-    S.jokers.modifiers.food_bypass_active = false  -- consume the bypass (one draw action only)
-  end
+  local effective_max = HAND_MAX or 15
   local drawnCount = 0
   if deck and deck.cards and #deck.cards == 0 then reshuffle_discard_into_deck() end
   for _ = 1, (n or 0) do
@@ -139,6 +155,7 @@ local function drawN(n)
     table.insert(hand, d[1])
     drawnCount = drawnCount + 1
   end
+  maybeTriggerDepletion()
   if drawnCount > 0 then
     if currentSort == "suit" and Rules and Rules.sortHandBySuit then
       Rules.sortHandBySuit(hand)
@@ -151,13 +168,24 @@ end
 
 S.drawCards = drawN
 
-local function drawUpTo(target)
-  -- Food Joker passive: if food_bypass_active, temporarily lift the card hand cap for this draw only.
-  local effective_max = HAND_MAX or 20
-  if S and S.jokers and S.jokers.modifiers and S.jokers.modifiers.food_bypass_active then
-    effective_max = (HAND_MAX or 20) + (S.jokers.modifiers.food_draw_count or 10)
-    S.jokers.modifiers.food_bypass_active = false  -- consume the bypass (one draw action only)
+-- Bicycle support: append temporary cards to the hand and track them so the
+-- end-of-turn cleanup can remove any that were not played this turn.
+S.addTempCards = function(cards)
+  S.jokers = S.jokers or {}
+  S.jokers.temp_cards = S.jokers.temp_cards or {}
+  for _, c in ipairs(cards or {}) do
+    table.insert(hand, c)
+    table.insert(S.jokers.temp_cards, c)
   end
+  if currentSort == "suit" and Rules and Rules.sortHandBySuit then
+    Rules.sortHandBySuit(hand)
+  elseif Rules and Rules.sortHandByRank then
+    Rules.sortHandByRank(hand)
+  end
+end
+
+local function drawUpTo(target)
+  local effective_max = HAND_MAX or 15
   target = math.min(target or HAND_START, effective_max)
   local total = 0
   while getHandSize() < target do
@@ -167,6 +195,7 @@ local function drawUpTo(target)
     table.insert(hand, d[1])
     total = total + 1
   end
+  maybeTriggerDepletion()
   if total > 0 then
     if currentSort == "suit" and Rules and Rules.sortHandBySuit then
       Rules.sortHandBySuit(hand)
@@ -326,7 +355,11 @@ local function enterEndPhase()
   if Attacks and Scoring then
     local res = Attacks.resolve(S, Scoring)
     if res and res.penalized then
-      setStatus("Attack: "..res.target.." ⚠  -" .. tostring(res.penalty) .. " pts")
+      if res.halved then
+        setStatus("Attack: "..res.target.." ⚡ penalty halved  -" .. tostring(res.penalty) .. " pts")
+      else
+        setStatus("Attack: "..res.target.." ⚠  -" .. tostring(res.penalty) .. " pts")
+      end
       S.combat.correct_streak = 0
     elseif res and res.canceled then
       setStatus("Attack canceled.")
@@ -346,7 +379,19 @@ local function enterEndPhase()
   nextTurn()
 end
 
+-- Remove any Bicycle temporary cards still in hand (i.e. not played this turn).
+-- Played temporary cards have had their `temporary` flag cleared and were moved
+-- into the deck, so only unplayed ones remain flagged here.
+local function cleanupTempCards()
+  if not (S.jokers and S.jokers.temp_cards) then return end
+  for i = #hand, 1, -1 do
+    if hand[i] and hand[i].temporary then table.remove(hand, i) end
+  end
+  S.jokers.temp_cards = {}
+end
+
 nextTurn = function()
+  cleanupTempCards()
   GS.phase = "MAIN"
   GS.turn = (GS.turn or 1) + 1
   setStatus("Your turn.")
@@ -532,6 +577,7 @@ local function drawCard(card, i)
   -- rank + suit big
   love.graphics.setColor(suitColor)
   local displayRank = (card.rank == "T") and "10" or tostring(card.rank)
+  if card.temporary then displayRank = displayRank .. " *" end  -- Bicycle temp marker
   love.graphics.printf(displayRank .. " " .. suit, x, y + 8, CARD_W, "center")
 
   -- small corner suit label
@@ -654,6 +700,11 @@ function love.mousepressed(x, y, b)
         UI.overlay = nil
         restartGame()
       end
+    elseif UI.overlay.kind == "loss" then
+      if pointInRect(x, y, BTN_NEXT_T) then
+        UI.overlay = nil
+        restartGame()
+      end
     elseif pointInRect(x, y, BTN_NEXT_T) then
       confirmOverlay()
     end
@@ -748,9 +799,15 @@ function love.keypressed(key)
 
   if UI and UI.overlay then
     -- Win overlay: Enter defaults to Endless Mode (via confirmOverlay); R restarts.
+    -- Loss overlay: Enter or R restarts the run.
     if key == "return" or key == "kpenter" then
-      confirmOverlay()
-    elseif key == "r" and UI.overlay.kind == "win" then
+      if UI.overlay.kind == "loss" then
+        UI.overlay = nil
+        restartGame()
+      else
+        confirmOverlay()
+      end
+    elseif key == "r" and (UI.overlay.kind == "win" or UI.overlay.kind == "loss") then
       UI.overlay = nil
       restartGame()
     end
@@ -782,11 +839,23 @@ function love.keypressed(key)
         table.remove(hand, i)
       end
 
+      -- Bicycle: temporary cards that get played become permanent deck cards
+      -- (added to the main deck) rather than going to the Played pile.
+      local toCommit = {}
+      for _, c in ipairs(toPlayed) do
+        if c.temporary then
+          c.temporary = nil
+          if deck and deck.cards then table.insert(deck.cards, c) end
+        else
+          table.insert(toCommit, c)
+        end
+      end
+
       -- played → Played pile (permanent)
       if deck and deck.commitPlayed then
-        deck:commitPlayed(toPlayed)
+        deck:commitPlayed(toCommit)
       else
-        if deck and deck.discardCards then deck:discardCards(toPlayed) end
+        if deck and deck.discardCards then deck:discardCards(toCommit) end
       end
       selected = {}
 
@@ -1054,7 +1123,7 @@ function love.draw()
     else
       BTN_NEXT_T.x = px + math.floor((pw-140)/2)
       BTN_NEXT_T.y = py + ph - 50
-      BTN_NEXT_T.label = "Next"
+      BTN_NEXT_T.label = (UI.overlay.kind == "loss") and "Restart" or "Next"
       drawButton(BTN_NEXT_T)
     end
     love.graphics.setColor(1,1,1)

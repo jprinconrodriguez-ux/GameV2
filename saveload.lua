@@ -6,7 +6,8 @@ local M = {}
 local function copy_hand(hand)
   local out = {}
   for i = 1, #hand do
-    out[i] = { suit = hand[i].suit, rank = hand[i].rank }
+    -- Preserve the Bicycle `temporary` flag so mid-turn temp cards survive a save.
+    out[i] = { suit = hand[i].suit, rank = hand[i].rank, temporary = hand[i].temporary or nil }
   end
   return out
 end
@@ -35,7 +36,10 @@ function M.build_state(deck, hand, GS, S, UI)
   if S.jokers then
     jokerState = {
       hand = {},
-      used_this_turn = S.jokers.used_this_turn
+      used_this_turn = S.jokers.used_this_turn,
+      -- Number of Bicycle temporary cards live this turn (the cards themselves
+      -- are restored from the hand, where they carry the `temporary` flag).
+      temp_count = #(S.jokers.temp_cards or {}),
     }
     for i,id in ipairs(S.jokers.hand or {}) do jokerState.hand[i] = id end
   end
@@ -102,6 +106,12 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
       S.jokers.hand = {}
       for i,id in ipairs(state.jokers.hand or {}) do S.jokers.hand[i] = id end
       S.jokers.used_this_turn = state.jokers.used_this_turn
+    end
+    -- Rebuild temp_cards as references to the restored hand cards that still
+    -- carry the `temporary` flag, so end-of-turn cleanup keeps working.
+    S.jokers.temp_cards = {}
+    for i = 1, #hand do
+      if hand[i].temporary then table.insert(S.jokers.temp_cards, hand[i]) end
     end
   end
 

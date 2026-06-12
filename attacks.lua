@@ -35,6 +35,7 @@ function M.announce(S, rng, probs)
   local target = pick_weighted(pool, rng or math)
   S.combat.current_attack = target
   S.combat.cancel_current_attack = false
+  S.combat.halve_penalty = false
   S.combat.just_played = nil
   return target
 end
@@ -66,9 +67,19 @@ function M.resolve(S, scoring)
   -- penalty
   local pts = 0
   if scoring and scoring.apply_penalty then
-    pts = scoring.apply_penalty(S, target)
+    pts = scoring.apply_penalty(S, target)  -- applies the full penalty to the score
   end
-  local res = { resolved=true, penalized=true, target=target, penalty=pts }
+  -- Skull: halve the penalty. apply_penalty already subtracted the full amount,
+  -- so refund the difference and keep the halved (ceil) value.
+  local halved = false
+  if S.combat.halve_penalty then
+    local half = math.ceil(pts / 2)
+    if S.meta then S.meta.score = (S.meta.score or 0) + (pts - half) end
+    pts = half
+    halved = true
+    S.combat.halve_penalty = false
+  end
+  local res = { resolved=true, penalized=true, target=target, penalty=pts, halved=halved or nil }
   S.combat.current_attack = nil
   S.combat.just_played = nil
   return res

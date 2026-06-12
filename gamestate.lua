@@ -1,3 +1,5 @@
+-- Phases: "TITLE", "PREP", "MAIN", "END", "THRESHOLD", "WIN", "LOSS"
+--   LOSS  → the run ended in a loss (deck depleted before win conditions met).
 local Gamestate = {
   phase = "MAIN",
   turn  = 1,

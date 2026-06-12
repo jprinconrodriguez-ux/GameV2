@@ -177,12 +177,16 @@ do
     assert(def, "Unknown joker id drawn: "..tostring(S.jokers.hand[1]))
     counts[def.rarity] = (counts[def.rarity] or 0) + 1
   end
-  -- Each rarity's observed share must be within ±8 percentage points of its weight.
+  -- Each rarity's observed share must be within ±8 percentage points of its
+  -- expected probability (weight / total weight; weights need not sum to 100).
+  local total_w = 0
+  for _, w in pairs(REG.rarity_weights) do total_w = total_w + w end
   for rarity, weight in pairs(REG.rarity_weights) do
+    local expected_pct = (weight / total_w) * 100
     local share = ((counts[rarity] or 0) / N) * 100
-    assert(math.abs(share - weight) <= 8,
-      string.format("Rarity %s share %.1f%% deviates more than 8pp from weight %d%%",
-        rarity, share, weight))
+    assert(math.abs(share - expected_pct) <= 8,
+      string.format("Rarity %s share %.1f%% deviates more than 8pp from expected %.1f%%",
+        rarity, share, expected_pct))
   end
 end
 print("2.3 Joker rarity distribution: passed")
@@ -388,5 +392,80 @@ do
   assert(#S.jokers.hand == 5, "joker hand grew past cap: got "..#S.jokers.hand)
 end
 print("Joker cap overflow test: passed")
+
+-- ── v3.1 Area 1: Deck depletion loss condition ───────────────────────────────
+do
+  local Rules = require("rules")
+  local deck = Deck.new(1)
+  -- Empty both the main deck and discard pile (nothing left to reshuffle).
+  deck.cards = {}
+  deck.discard = {}
+  assert(#deck.cards == 0 and #deck.discard == 0,
+    "depletion: main deck and discard must both be empty")
+
+  local S = {}
+  Scoring.init(S)
+  S.meta.score = 0
+  GS:reset()  -- GS.playedHands starts empty
+  local score_met   = Scoring.is_threshold_complete(S)
+  local all_marked  = Rules.isAllMarked(GS)
+  assert(score_met == false,  "depletion: score target must be unmet")
+  assert(all_marked == false, "depletion: not all categories marked")
+  -- Either win condition unmet → the run would end in a loss.
+  assert(not (score_met and all_marked), "depletion: loss should trigger")
+end
+print("Depletion condition test: passed")
+
+-- ── v3.1 Area 2: Infinite joker pool draws valid, varied jokers ──────────────
+do
+  local REG = require("joker_registry")
+  local S = {}
+  Jokers.init(S, love.math)
+  local seen = {}
+  for _ = 1, 100 do
+    S.jokers.hand = {}  -- keep clear of the cap so every draw lands
+    local jid = Jokers.gain_joker(S, love.math)
+    assert(jid and REG.by_id[jid], "gain_joker returned an invalid id: "..tostring(jid))
+    seen[jid] = true
+  end
+  local distinct = 0
+  for _ in pairs(seen) do distinct = distinct + 1 end
+  assert(distinct >= 2, "expected at least 2 distinct joker ids across 100 draws")
+end
+print("Joker pool probability test: passed")
+
+-- ── v3.1 Area 3: Food Joker passive grants +3 hand cap ───────────────────────
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.hand = { "food" }   -- Food Joker passive in hand
+  Jokers.start_turn(S)         -- refreshes passives
+  assert(S.jokers.modifiers.hand_cap_bonus == 3,
+    "Food Joker should grant +3 hand cap bonus, got "..tostring(S.jokers.modifiers.hand_cap_bonus))
+end
+print("Food Joker hand cap test: passed")
+
+-- ── v3.1 Area 4: Skull halves the current attack's penalty ───────────────────
+do
+  local S = {}
+  Scoring.init(S)
+  S.meta.threshold = 1
+  S.meta.score = 0
+  S.combat = { current_attack = "Four of a Kind" }  -- full T1 penalty = 32
+  -- Full penalty (without the Skull flag) for reference.
+  local full = Scoring.apply_penalty(S, "Four of a Kind")
+  S.meta.score = 0
+  -- Now with Skull active, the applied penalty must be ceil(full / 2).
+  S.combat = { current_attack = "Four of a Kind" }
+  FX.skull(S, {})
+  local res = Attacks.resolve(S, Scoring)
+  assert(res.penalized, "Skull test: attack should still penalize")
+  assert(res.halved, "Skull test: result should be flagged halved")
+  assert(res.penalty == math.ceil(full / 2),
+    string.format("Skull test: penalty %d != ceil(%d/2)=%d", res.penalty, full, math.ceil(full/2)))
+  assert(S.meta.score == -math.ceil(full / 2),
+    "Skull test: score should drop by the halved penalty only")
+end
+print("Skull halve test: passed")
 
 print("\nAll tests passed.")

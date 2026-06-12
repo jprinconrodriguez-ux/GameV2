@@ -8,28 +8,56 @@ function E.noop(state, ctx)
   return { ok=true, msg="(No effect yet.)" }
 end
 
--- Example: Bicycle (Draw 3)
-function E.draw3(state, ctx)
-  if state.drawCards then state.drawCards(3) end
-  return { ok=true, msg="Drew 3 cards." }
+-- Bicycle (Common, Active) — Joker Index:
+-- Draw 3 completely random cards (NOT from the main deck). They are added to the
+-- hand ONLY for the turn the joker was used. Any of the 3 that are played this
+-- turn become permanent deck cards; the rest are removed at end of turn.
+-- Temporary cards are flagged `temporary=true` and shown with a `*` marker.
+local SUITS = { "♠", "♥", "♦", "♣" }
+local RANKS = { "A","2","3","4","5","6","7","8","9","10","J","Q","K" }
+
+local function rand_index(rng, n)
+  if rng and rng.random then
+    if rng.random == (love and love.math and love.math.random) then
+      return rng.random(1, n)
+    else
+      return rng:random(1, n)
+    end
+  end
+  return math.random(1, n)
 end
 
--- Example: Skull (Cancel current attack)
-function E.cancel_attack(state, ctx)
-  -- Expect your attack resolver to check: state.combat.cancel_current_attack == true
+function E.bicycle(state, ctx)
+  local rng = ctx and ctx.rng
+  local cards = {}
+  for _ = 1, 3 do
+    local suit = SUITS[rand_index(rng, #SUITS)]
+    local rank = RANKS[rand_index(rng, #RANKS)]
+    table.insert(cards, { suit = suit, rank = rank, temporary = true })
+  end
+  state.jokers.temp_cards = state.jokers.temp_cards or {}
+  for _, c in ipairs(cards) do table.insert(state.jokers.temp_cards, c) end
+  if state.addTempCards then state.addTempCards(cards) end
+  return { ok=true, msg="Drew 3 temporary cards." }
+end
+E.draw3 = E.bicycle  -- backward-compatible alias
+
+-- Skull (Uncommon, Active) — Joker Index: halve the current attack's damage.
+function E.skull(state, ctx)
   state.combat = state.combat or {}
-  state.combat.cancel_current_attack = true
-  return { ok=true, msg="Canceled the current attack." }
+  state.combat.halve_penalty = true
+  return { ok=true, msg="Attack damage halved." }
 end
+E.cancel_attack = E.skull  -- backward-compatible alias
 
--- Food Joker passive: sets a flag that allows drawN to bypass HAND_MAX this turn.
--- (Card hand cap bypass — distinct from the joker hand cap of 5.)
-function E.food_passive(state, ctx)
+-- Food Joker (Legendary, Passive) — Joker Index: hand cap +3 while in hand.
+-- Applied each turn by J.start_turn (modifiers are recomputed from scratch).
+function E.hand_cap_plus3(state, ctx)
   state.jokers.modifiers = state.jokers.modifiers or {}
-  state.jokers.modifiers.food_bypass_active = true
-  state.jokers.modifiers.food_draw_count = 10
+  state.jokers.modifiers.hand_cap_bonus = (state.jokers.modifiers.hand_cap_bonus or 0) + 3
   return { ok = true }
 end
+E.food_passive = E.hand_cap_plus3  -- backward-compatible alias
 
 -- Rarity ordering (least rare → most rare). Used by Bee to pick a discard.
 local RARITY_ORDER = {
