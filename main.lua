@@ -29,12 +29,15 @@ local currentSort = "rank"
 -- Buttons
 local UI = { overlay = nil }
 
-local BTN_RESTART = {x=40,  y=330, w=100, h=30, label="Restart"}
-local BTN_RANK    = {x=160, y=330, w=110, h=30, label="Sort: Rank"}
-local BTN_SUIT    = {x=280, y=330, w=110, h=30, label="Sort: Suit"}
-local BTN_SAVE   = {x=400, y=330, w=90,  h=30, label="Save"}
-local BTN_LOAD   = {x=500, y=330, w=90,  h=30, label="Load"}
-local BTN_NEXT_T = {x=0, y=0, w=140, h=36, label="Next"}
+-- NOTE: the .y of these five buttons is recomputed every frame in love.draw()
+-- (see BTN_Y = math.max(210, hud_y + 8)); the 210 below is just a safe default
+-- so they never collide with the joker row (JOKER_Y=250) before the first draw.
+local BTN_RESTART = {x=40,  y=210, w=100, h=30, label="Restart"}
+local BTN_RANK    = {x=160, y=210, w=110, h=30, label="Sort: Rank"}
+local BTN_SUIT    = {x=280, y=210, w=110, h=30, label="Sort: Suit"}
+local BTN_SAVE   = {x=400, y=210, w=90,  h=30, label="Save"}
+local BTN_LOAD   = {x=500, y=210, w=90,  h=30, label="Load"}
+local BTN_NEXT_T = {x=0, y=0, w=140, h=36, label="Next"}  -- overlay button; positioned relative to panel, untouched
 
 -- SAVE/LOAD
 -- Bare filename (no leading "/" or "./"): love.filesystem resolves this to LÖVE's
@@ -477,6 +480,7 @@ end
 
 -- === Checklist UI ===
 local function drawChecklistUI()
+  -- anchored at x=400; safe for window width >= 800 (leaves 400px for the right column)
   local x, y = 400, 60
   love.graphics.setColor(1,1,1)
   love.graphics.print("Categories (played at least once):", x, y)
@@ -574,6 +578,14 @@ function love.mousepressed(x, y, b)
 end
 
 function love.keypressed(key)
+  -- F11 fullscreen toggle: kept above ALL guards (overlay + GS.phase) so it always
+  -- fires, in every phase (MAIN/WIN/END/THRESHOLD) and even while an overlay is up.
+  if key == "f11" then
+    local fs = love.window.getFullscreen()
+    love.window.setFullscreen(not fs)
+    return
+  end
+
   if UI and UI.overlay then
     if key == "return" or key == "kpenter" then advanceThreshold() end
     return
@@ -745,12 +757,6 @@ function love.keypressed(key)
     setStatus("Selection cleared.")
   end
 
-  if key == "f11" then
-    local fs = love.window.getFullscreen()
-    love.window.setFullscreen(not fs)
-    return
-  end
-
   if key == "f5" then
     saveToSlot(SAVE_SLOT)
     return
@@ -775,9 +781,15 @@ function love.draw()
   local deckCount    = (deck and deck.cards)   and #deck.cards   or 0
   local discardCount = (deck and deck.discard) and #deck.discard or 0
   local playedCount  = (deck and deck.played)  and #deck.played  or 0
+  -- ── HUD line audit (worst case: all optional lines visible) ───────────────
+  -- Layout budget: HUD must finish above the button row (>=210) and well above
+  -- the joker row (JOKER_Y=250). Worst-case final hud_y below is ~190, leaving a
+  -- safe gap. If lines are ever added past y=220, tighten the +20 increments to +18.
   local hud_y = 60
+  -- HUD line 1: ~y=60  (Deck / Discard / Played counts)
   love.graphics.print("Deck: "..deckCount.."  Discard: "..discardCount.."  Played: "..playedCount, 40, hud_y)
   hud_y = hud_y + 20
+  -- HUD line 2: ~y=80  (Score / threshold target) — only when S.meta exists
   if S and S.meta then
     local t = (S.meta and S.meta.threshold) or 1
     local tgt = Scoring and Scoring.target_for and Scoring.target_for(t) or nil
@@ -788,16 +800,31 @@ function love.draw()
     end
     hud_y = hud_y + 20
   end
+  -- HUD line 3: ~y=100 (Current attack) — only when an attack is announced
   if S and S.combat and S.combat.current_attack then
     love.graphics.print("Attack → "..S.combat.current_attack, 40, hud_y)
     hud_y = hud_y + 20
   end
+  -- HUD line 4: ~y=120 (Hand size / max)
   love.graphics.print("Hand size: "..tostring(#hand).." (max "..HAND_MAX..")", 40, hud_y)
   hud_y = hud_y + 30
+  -- HUD line 5: ~y=150 (Jokers in hand vs base cap of 5; Food Joker may extend at runtime)
+  love.graphics.print("Jokers: " .. tostring(#(S.jokers and S.jokers.hand or {})) .. "/5", 40, hud_y)
+  hud_y = hud_y + 20
+  -- HUD line 6: ~y=170 (Turn / phase — single shared line)
   love.graphics.print("Turn: "..tostring(GS.turn or 1).."   Phase: "..GS.phase, 40, hud_y)
   hud_y = hud_y + 20
   local lastPlayedY = hud_y + 25
-  
+  -- After the HUD audit, hud_y is final. Anchor the button row below the last HUD
+  -- line, clamped to a minimum of y=210 so it always sits between the HUD and the
+  -- joker row (JOKER_Y=250). Worst-case hud_y≈190 → BTN_Y=210 → buttons span 210–240.
+  local BTN_Y = math.max(210, hud_y + 8)
+  BTN_RESTART.y = BTN_Y
+  BTN_RANK.y    = BTN_Y
+  BTN_SUIT.y    = BTN_Y
+  BTN_SAVE.y    = BTN_Y
+  BTN_LOAD.y    = BTN_Y
+
   -- Buttons
   drawButton(BTN_RESTART)
   drawButton(BTN_RANK)
