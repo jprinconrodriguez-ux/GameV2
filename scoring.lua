@@ -75,6 +75,15 @@ function M.is_threshold_complete(S)
   return tgt and (S.meta.score or 0) >= tgt
 end
 
+-- Preparation-phase skip bonus (Instruction Book):
+-- base 5/10/15 pts for 1/2/3 turns skipped, multiplied by the threshold
+-- multiplier (×1 at T1, ×2 at T2, ×4 at T3, ×6 at T4+).
+function M.prep_skip_bonus(turns_skipped, threshold)
+  local base = turns_skipped * 5  -- 1→5, 2→10, 3→15
+  local mult = ({[1]=1,[2]=2,[3]=4})[threshold] or 6  -- T4+ = ×6
+  return base * mult
+end
+
 function M.reset_for_next_threshold(S)
   if not S or not S.meta then return end
   S.meta.score = 0

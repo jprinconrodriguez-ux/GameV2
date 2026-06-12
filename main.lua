@@ -39,6 +39,7 @@ local BTN_LOAD   = {x=500, y=344, w=90,  h=30, label="Load"}
 local BTN_SKIP       = {x=600, y=344, w=90,  h=30, label="Skip"}    -- DEBUG: playtesting skip
 local BTN_JOKER_MENU = {x=700, y=344, w=110, h=30, label="Jokers"}  -- DEBUG: playtesting joker inject
 local BTN_NEXT_T = {x=0, y=0, w=140, h=36, label="Next"}  -- overlay button; positioned relative to panel, untouched
+local BTN_ENDLESS = {x=0, y=0, w=140, h=36, label="Endless Mode"} -- win overlay; positioned in love.draw
 local BTN_START  = {x=0, y=0, w=160, h=44, label="Start"} -- title screen; positioned in love.draw
 
 -- SAVE/LOAD
@@ -177,8 +178,36 @@ local function drawUpTo(target)
 end
 
 
--- Threshold advance: bump threshold (cap 5), reset score, keep hand/jokers, recycle piles,
--- announce next attack and start next turn.
+-- === PREPARATION PHASE (M3) ===
+-- 3 setup turns at game start and each threshold transition.
+-- Only discard/draw allowed; no attack announced; skipping awards a scaled bonus.
+
+local function endPrepPhase()
+  GS.prep_turns_remaining = 0
+  GS.phase = "MAIN"
+  nextTurn()  -- announces first attack, resets discard flag, etc.
+  setStatus("Your turn.")
+end
+
+local function usePrepTurn()
+  GS.prep_turns_remaining = GS.prep_turns_remaining - 1
+  if GS.prep_turns_remaining <= 0 then
+    endPrepPhase()
+  else
+    setStatus("Setup Phase — " .. GS.prep_turns_remaining .. " turn(s) remaining. (Skip: S key)")
+  end
+end
+
+local function enterPrepPhase()
+  GS.phase = "PREP"
+  GS.prep_turns_remaining = 3
+  selected = {}
+  selectedJoker = nil
+  setStatus("Setup Phase — " .. GS.prep_turns_remaining .. " turns remaining. (Skip: S key)")
+end
+
+-- Threshold advance: bump threshold, reset score, keep hand/jokers, recycle piles,
+-- then enter the preparation phase (the first attack fires when prep ends).
 local function mergePilesIntoDeck()
   if not deck then return end
   deck.cards = deck.cards or {}
@@ -199,11 +228,11 @@ end
 local function advanceThreshold()
   if not S.meta then return end
   local cur = S.meta.threshold or 1
-  if cur >= 3 then
-    -- T3 was just completed: the game ends here. Show the win overlay instead
-    -- of advancing (its button restarts the game).
-    GS.phase = "THRESHOLD"
-    UI.overlay = { kind = "win", message = "You Win!" }
+  if cur >= 3 and not GS.endless then
+    -- Safety guard: past T3 only Endless Mode may advance. (The unified win
+    -- check in the play flow is the canonical trigger for the win overlay.)
+    GS.phase = "WIN"
+    UI.overlay = { kind = "win", message = "You Win! Continue to Endless?" }
     return
   end
   S.meta.threshold = cur + 1
@@ -211,17 +240,19 @@ local function advanceThreshold()
   -- Joker hand intentionally NOT reset here; jokers carry over between thresholds per the rules.
   GS.playedHands = {}  -- clear the checklist for the new tier
   mergePilesIntoDeck()
+  drawUpTo(HAND_START)
   UI.overlay = nil
-  GS.phase = "MAIN"
-  nextTurn()
+  enterPrepPhase()  -- nextTurn() fires when prep ends
 end
 
--- Overlay confirm: "Next" advances the threshold; "Restart" (win overlay) restarts.
+-- Overlay confirm (Enter key): "Next" advances the threshold; on the win
+-- overlay Enter defaults to Endless Mode (R / Restart button restarts).
 local function confirmOverlay()
   if not (UI and UI.overlay) then return end
   if UI.overlay.kind == "win" then
+    GS.endless = true
     UI.overlay = nil
-    restartGame()
+    advanceThreshold()
   else
     advanceThreshold()
   end
@@ -288,14 +319,6 @@ local function jokerAtPosition(x, y)
   return nil
 end
 
--- === CHECKLIST HELPER ===
-local function isAllMarked()
-  for _, name in ipairs(Rules.CATEGORIES) do
-    if not GS.playedHands[name] then return false end
-  end
-  return true
-end
-
 -- === TURN HELPERS ===
 
 local function enterEndPhase()
@@ -339,12 +362,10 @@ end
 
 -- Discard (up to 5) and redraw same amount (respect HAND_MAX)
 local function discardSelected()
-  if GS.limits and GS.limits.discard_used then
+  -- PREP: each discard/draw consumes one setup turn; the per-turn discard
+  -- limit does not apply (it resets when MAIN begins via nextTurn()).
+  if GS.phase ~= "PREP" and GS.limits and GS.limits.discard_used then
     setStatus("Discard already used this turn.")
-    return
-  end
-  if GS.phase == "WIN" then
-    setStatus("Game won—press R to restart.")
     return
   end
   if GS.phase == "END" then
@@ -378,6 +399,10 @@ local function discardSelected()
     Rules.sortHandByRank(hand)
   end
   setStatus("Discarded "..#toDiscard..", drew "..tostring(drew)..".")
+  if GS.phase == "PREP" then
+    usePrepTurn()
+    return
+  end
   -- stay in MAIN phase; you can still play a hand this turn
   GS.limits = GS.limits or {}
   GS.limits.discard_used = true
@@ -440,11 +465,13 @@ restartGame = function()
     Jokers.init(S, love.math)
     Jokers.start_turn(S)
   end
-  if Attacks then Attacks.announce(S, love.math) end
+  -- No attack announce here: the run opens in PREP (no attacks during setup);
+  -- the first attack is announced by nextTurn() when prep ends.
   hand = {}
   selected = {}
   GS:reset()
   setStatus("")
+  enterPrepPhase()
   drawUpTo(HAND_START)
 end
 
@@ -618,7 +645,18 @@ function love.mousepressed(x, y, b)
   end
 
   if UI and UI.overlay then
-    if pointInRect(x, y, BTN_NEXT_T) then confirmOverlay() end
+    if UI.overlay.kind == "win" then
+      if pointInRect(x, y, BTN_ENDLESS) then
+        GS.endless = true
+        UI.overlay = nil
+        advanceThreshold()
+      elseif pointInRect(x, y, BTN_NEXT_T) then
+        UI.overlay = nil
+        restartGame()
+      end
+    elseif pointInRect(x, y, BTN_NEXT_T) then
+      confirmOverlay()
+    end
     return
   end
 
@@ -636,24 +674,22 @@ function love.mousepressed(x, y, b)
     return
   end
 
-  if GS.phase ~= "WIN" then
-    if pointInRect(x, y, BTN_RANK) then
-      currentSort = "rank"
-      if Rules and Rules.sortHandByRank then
-        Rules.sortHandByRank(hand)
-      end
-      selected = {}
-      setStatus("Sorted by rank (A-high left).")
-      return
-    elseif pointInRect(x, y, BTN_SUIT) then
-      currentSort = "suit"
-      if Rules and Rules.sortHandBySuit then
-        Rules.sortHandBySuit(hand)
-      end
-      selected = {}
-      setStatus("Sorted by suit (♠ ♥ ♦ ♣; A-high within).")
-      return
+  if pointInRect(x, y, BTN_RANK) then
+    currentSort = "rank"
+    if Rules and Rules.sortHandByRank then
+      Rules.sortHandByRank(hand)
     end
+    selected = {}
+    setStatus("Sorted by rank (A-high left).")
+    return
+  elseif pointInRect(x, y, BTN_SUIT) then
+    currentSort = "suit"
+    if Rules and Rules.sortHandBySuit then
+      Rules.sortHandBySuit(hand)
+    end
+    selected = {}
+    setStatus("Sorted by suit (♠ ♥ ♦ ♣; A-high within).")
+    return
   end
 
   if pointInRect(x, y, BTN_SAVE) then
@@ -677,10 +713,8 @@ function love.mousepressed(x, y, b)
     return
   end
 
-  if GS.phase == "WIN" then
-    -- lock inputs except Restart
-    return
-  end
+  -- (Old WIN-phase input lock removed: the win overlay now gates input globally
+  -- via the UI.overlay check above.)
   if GS.phase == "END" then
     setStatus("Turn advanced automatically.")
     return
@@ -713,12 +747,18 @@ function love.keypressed(key)
   end
 
   if UI and UI.overlay then
-    if key == "return" or key == "kpenter" then confirmOverlay() end
+    -- Win overlay: Enter defaults to Endless Mode (via confirmOverlay); R restarts.
+    if key == "return" or key == "kpenter" then
+      confirmOverlay()
+    elseif key == "r" and UI.overlay.kind == "win" then
+      UI.overlay = nil
+      restartGame()
+    end
     return
   end
   if key == "return" or key == "kpenter" then
-    if GS.phase == "WIN" then
-      setStatus("Game won—press R to restart.")
+    if GS.phase == "PREP" then
+      setStatus("Setup phase — discard only.")
       return
     end
     if GS.phase == "END" then
@@ -769,15 +809,19 @@ function love.keypressed(key)
       setStatus(msg)
       if Attacks then Attacks.note_played_this_turn(S, cat) end
 
-      -- Threshold completion check (T1–T3)
-      -- Win requires BOTH reaching the score target AND completing all 8 categories (T3 only).
-      local scoreReached = Scoring and Scoring.is_threshold_complete and Scoring.is_threshold_complete(S)
-      local isT3Win = scoreReached and (S.meta.threshold == 3) and isAllMarked()
-      local completed = scoreReached and ((S.meta.threshold ~= 3) or isT3Win)
-      if isT3Win then
-        GS.phase = "THRESHOLD"
-        UI.overlay = { kind = "win", message = "You Win!" }
-      elseif completed then
+      -- Canonical win condition (Rule Book): T3 + score target + all 8 hands marked.
+      -- Below T3, reaching the score target completes the threshold as before.
+      local t3_win = (S.meta.threshold == 3)
+                   and Scoring.is_threshold_complete(S)
+                   and Rules.isAllMarked(GS)
+
+      local threshold_done = (S.meta.threshold ~= 3)
+                           and Scoring.is_threshold_complete(S)
+
+      if t3_win then
+        GS.phase = "WIN"
+        UI.overlay = { kind = "win", message = "You Win! Continue to Endless?" }
+      elseif threshold_done then
         GS.phase = "THRESHOLD"
         UI.overlay = { kind = "threshold", message = "Threshold completed" }
       else
@@ -788,10 +832,6 @@ function love.keypressed(key)
     end
 
   elseif key == "x" then
-    if GS.phase == "WIN" then
-      setStatus("Game won—press R to restart.")
-      return
-    end
     if GS.phase == "END" then
       setStatus("Turn advanced automatically.")
       return
@@ -799,15 +839,21 @@ function love.keypressed(key)
     -- DISCARD (1–5) and redraw same amount
     discardSelected()
 
+  elseif key == "s" then
+    -- PREP: skip remaining setup turns for a scaled bonus
+    if GS.phase ~= "PREP" then return end
+    local skipped = GS.prep_turns_remaining
+    if skipped <= 0 then endPrepPhase() return end
+    local bonus = Scoring.prep_skip_bonus(skipped, S.meta.threshold or 1)
+    S.meta.score = (S.meta.score or 0) + bonus
+    endPrepPhase()
+    setStatus("Skipped setup. +" .. bonus .. " pts bonus!")
+
   elseif key == "r" then
     restartGame()
     setStatus("Restarted.")
 
   elseif key == "d" then
-    if GS.phase == "WIN" then
-      setStatus("Game won—press R to restart.")
-      return
-    end
     -- DEBUG draw 1 (does NOT end the turn)
     local need = can_draw(1)
     if deck and deck.cards and #deck.cards == 0 then reshuffle_discard_into_deck() end
@@ -822,10 +868,6 @@ function love.keypressed(key)
     end
 
   elseif key == "t" then
-    if GS.phase == "WIN" then
-      setStatus("Game won—press R to restart.")
-      return
-    end
     -- DEBUG top-up to HAND_START (does NOT end the turn)
     local added = 0
     while #hand < (HAND_START or 10) do
@@ -839,8 +881,8 @@ function love.keypressed(key)
     end
 
     elseif key == "j" then
-    if GS.phase == "WIN" then
-      setStatus("Game won—press R to restart.")
+    if GS.phase == "PREP" then
+      setStatus("Setup phase — discard only.")
       return
     end
     if GS.phase == "END" then
@@ -871,10 +913,6 @@ function love.keypressed(key)
     end
 
   elseif key == "c" then
-    if GS.phase == "WIN" then
-      setStatus("Game won—press R to restart.")
-      return
-    end
     -- CLEAR selection
     selected = {}
     setStatus("Selection cleared.")
@@ -949,9 +987,16 @@ function love.draw()
   -- HUD line 5: ~y=150 (Jokers in hand vs base cap of 5; Food Joker may extend at runtime)
   love.graphics.print("Jokers: " .. tostring(#(S.jokers and S.jokers.hand or {})) .. "/5", 40, hud_y)
   hud_y = hud_y + 20
-  -- HUD line 6: ~y=170 (Turn / phase — single shared line)
-  love.graphics.print("Turn: "..tostring(GS.turn or 1).."   Phase: "..GS.phase, 40, hud_y)
+  -- HUD line 6: ~y=170 (Turn / phase — single shared line; Endless tag when active)
+  love.graphics.print("Turn: "..tostring(GS.turn or 1).."   Phase: "..GS.phase..(GS.endless and "   [Endless]" or ""), 40, hud_y)
   hud_y = hud_y + 20
+  -- HUD line 7: ~y=190 (PREP indicator — visible during setup turns only)
+  if GS.phase == "PREP" then
+    love.graphics.setColor(0.9, 0.8, 0.3)
+    love.graphics.print("⚙ SETUP PHASE — " .. GS.prep_turns_remaining .. " turn(s) left  [S = Skip for bonus]", 40, hud_y)
+    hud_y = hud_y + 20
+    love.graphics.setColor(1, 1, 1)
+  end
 
   -- Buttons (fixed in the red strip at y=344; see BTN_* definitions above)
   drawButton(BTN_RESTART)
@@ -997,10 +1042,21 @@ function love.draw()
     love.graphics.setColor(0,0,0)
     love.graphics.rectangle("line", px, py, pw, ph, 10, 10)
     love.graphics.printf(msg, px+20, py+20, pw-40, "center")
-    BTN_NEXT_T.x = px + math.floor((pw-140)/2)
-    BTN_NEXT_T.y = py + ph - 50
-    BTN_NEXT_T.label = (UI.overlay.kind == "win") and "Restart" or "Next"
-    drawButton(BTN_NEXT_T)
+    if UI.overlay.kind == "win" then
+      -- Two buttons side by side: Endless Mode (Enter) and Restart (R)
+      BTN_ENDLESS.x = px + math.floor(pw/2) - BTN_ENDLESS.w - 10
+      BTN_ENDLESS.y = py + ph - 50
+      BTN_NEXT_T.x = px + math.floor(pw/2) + 10
+      BTN_NEXT_T.y = py + ph - 50
+      BTN_NEXT_T.label = "Restart"
+      drawButton(BTN_ENDLESS)
+      drawButton(BTN_NEXT_T)
+    else
+      BTN_NEXT_T.x = px + math.floor((pw-140)/2)
+      BTN_NEXT_T.y = py + ph - 50
+      BTN_NEXT_T.label = "Next"
+      drawButton(BTN_NEXT_T)
+    end
     love.graphics.setColor(1,1,1)
   end
 end

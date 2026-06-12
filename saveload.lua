@@ -21,6 +21,8 @@ function M.build_state(deck, hand, GS, S, UI)
     correct_streak = (S and S.combat and S.combat.correct_streak) or 0,
     overlay = (UI and UI.overlay and UI.overlay.kind) or nil,
     turn  = GS.turn,
+    endless = GS.endless or false,
+    prep_turns_remaining = GS.prep_turns_remaining or 0,
     playedHands = {},
     limits = {
       discard_used = (GS.limits and GS.limits.discard_used) or false
@@ -65,6 +67,8 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
   end
 
   GS.phase = (state.gs and state.gs.phase) or "MAIN"
+  GS.endless = (state.gs and state.gs.endless) or false
+  GS.prep_turns_remaining = (state.gs and state.gs.prep_turns_remaining) or 0
   GS.turn  = (state.gs and state.gs.turn)  or 1
   GS.playedHands = {}
   if state.gs and state.gs.playedHands then

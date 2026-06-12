@@ -203,6 +203,8 @@ do
   Attacks.announce(S, love.math)
   GS.turn = 3
   GS.limits.discard_used = true
+  GS.endless = true
+  GS.prep_turns_remaining = 2
   local UI = {}
 
   local saved = SaveLoad.build_state(deck, hand, GS, S, UI)
@@ -234,8 +236,79 @@ do
   end
   assert(S.jokers.used_this_turn == saved_used_this_turn, "used_this_turn mismatch")
   assert(#hand == #saved.hand,             "hand size mismatch")
+  -- M3 fields: endless flag and prep turn counter must survive the round trip
+  assert(GS.endless == true,               "endless flag lost")
+  assert(GS.prep_turns_remaining == 2,     "prep_turns_remaining lost")
+  assert(GS.phase == "MAIN",               "phase mismatch (expected MAIN)")
+
+  -- Variant: a save taken during the PREP phase must restore as PREP
+  GS.phase = "PREP"
+  GS.prep_turns_remaining = 3
+  local saved_prep = SaveLoad.build_state(deck, hand, GS, S, UI)
+  GS:reset()
+  S.meta = {}
+  S.jokers = nil
+  UI = {}
+  hand = SaveLoad.apply_state(saved_prep, deck, GS, S, UI, Scoring, Jokers)
+  assert(GS.phase == "PREP",               "PREP phase not restored")
+  assert(GS.prep_turns_remaining == 3,     "PREP turn counter not restored")
 end
 print("Save/Load round trip test: passed")
+
+-- ── M3: Win condition test ────────────────────────────────────────────────────
+do
+  local Rules = require("rules")
+
+  local function win_checks(S, GS)
+    local t3_win = (S.meta.threshold == 3)
+                 and Scoring.is_threshold_complete(S)
+                 and Rules.isAllMarked(GS)
+    local threshold_done = (S.meta.threshold ~= 3)
+                         and Scoring.is_threshold_complete(S)
+    return t3_win, threshold_done
+  end
+
+  -- Scenario A: T3, score >= 300, all 8 hands marked → win
+  local S = {}
+  Scoring.init(S)
+  S.meta.threshold = 3
+  S.meta.score = 300
+  GS:reset()
+  for _, name in ipairs(Rules.CATEGORIES) do GS.playedHands[name] = true end
+  local t3_win, threshold_done = win_checks(S, GS)
+  assert(t3_win == true,         "Scenario A: t3_win should be true")
+  assert(threshold_done == false,"Scenario A: threshold_done should be false at T3")
+
+  -- Scenario B: T3, score >= 300, only 7 hands marked → no win
+  GS:reset()
+  for i = 1, 7 do GS.playedHands[Rules.CATEGORIES[i]] = true end
+  assert(Scoring.is_threshold_complete(S) == true, "Scenario B: score target reached")
+  assert(Rules.isAllMarked(GS) == false,           "Scenario B: checklist incomplete")
+  t3_win, threshold_done = win_checks(S, GS)
+  assert(t3_win == false,         "Scenario B: win must not trigger")
+  assert(threshold_done == false, "Scenario B: threshold_done must be false at T3")
+
+  -- Scenario C: T2, score >= 150 → threshold completes, no win
+  S.meta.threshold = 2
+  S.meta.score = 150
+  GS:reset()
+  t3_win, threshold_done = win_checks(S, GS)
+  assert(t3_win == false,        "Scenario C: not a win at T2")
+  assert(threshold_done == true, "Scenario C: threshold_done should be true")
+end
+print("Win condition test: passed")
+
+-- ── M3: Prep phase test ───────────────────────────────────────────────────────
+do
+  -- Skip bonus: base 5/10/15 × threshold multiplier (×1 T1, ×2 T2, ×4 T3, ×6 T4+)
+  assert(Scoring.prep_skip_bonus(1, 1) == 5,  "prep_skip_bonus(1,1) ~= 5")
+  assert(Scoring.prep_skip_bonus(3, 1) == 15, "prep_skip_bonus(3,1) ~= 15")
+  assert(Scoring.prep_skip_bonus(1, 2) == 10, "prep_skip_bonus(1,2) ~= 10")
+  assert(Scoring.prep_skip_bonus(3, 2) == 30, "prep_skip_bonus(3,2) ~= 30")
+  assert(Scoring.prep_skip_bonus(2, 3) == 40, "prep_skip_bonus(2,3) ~= 40")
+  assert(Scoring.prep_skip_bonus(3, 4) == 90, "prep_skip_bonus(3,4) ~= 90")
+end
+print("Prep phase test: passed")
 
 -- 2.4: Joker effects
 local FX = require("joker_effects")
@@ -316,4 +389,4 @@ do
 end
 print("Joker cap overflow test: passed")
 
-print("\nAll M1 tests passed.")
+print("\nAll tests passed.")
