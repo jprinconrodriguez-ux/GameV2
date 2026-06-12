@@ -52,7 +52,7 @@ print("Attack scaling test (spec): passed")
 
 -- ── 3. Probability sum sanity: every threshold must sum to 100 ───────────────
 do
-  for t = 1, 5 do
+  for t = 1, 3 do
     local probs = Attacks.probs_for_threshold(t)
     local sum = 0
     for _, w in pairs(probs) do sum = sum + w end
@@ -162,27 +162,30 @@ do
 end
 print("2.2 Penalty formula: passed")
 
--- ── 2.3: Joker pool total and per-rarity counts match spec ───────────────────
+-- ── 2.3: Joker rarity distribution matches draw weights (smoke test) ─────────
 do
+  local REG = require("joker_registry")
   local S = {}
   Jokers.init(S, love.math)
-  -- Total pool should be 84
-  assert(#S.jokers.pool == 84, "Pool size mismatch: expected 84, got "..#S.jokers.pool)
-  -- Count by rarity
+  local N = 1000
   local counts = {}
-  for _, id in ipairs(S.jokers.pool) do
-    local def = require("joker_registry").by_id[id]
-    assert(def, "Unknown joker id in pool: "..tostring(id))
+  for _ = 1, N do
+    S.jokers.hand = {}  -- keep clear of the hand cap so every draw lands
+    Jokers.gain_from_pool(S, 1, love.math)
+    assert(#S.jokers.hand == 1, "gain_from_pool should add exactly 1 joker")
+    local def = REG.by_id[S.jokers.hand[1]]
+    assert(def, "Unknown joker id drawn: "..tostring(S.jokers.hand[1]))
     counts[def.rarity] = (counts[def.rarity] or 0) + 1
   end
-  assert(counts.common    == 20, "common count wrong: "    ..tostring(counts.common))
-  assert(counts.uncommon  == 15, "uncommon count wrong: "  ..tostring(counts.uncommon))
-  assert(counts.rare      == 12, "rare count wrong: "      ..tostring(counts.rare))
-  assert(counts.epic      == 12, "epic count wrong: "      ..tostring(counts.epic))   -- 2 types × 6
-  assert(counts.legendary == 16, "legendary count wrong: " ..tostring(counts.legendary)) -- 8 types × 2
-  assert(counts.mythic    ==  9, "mythic count wrong: "    ..tostring(counts.mythic))  -- 9 types × 1
+  -- Each rarity's observed share must be within ±8 percentage points of its weight.
+  for rarity, weight in pairs(REG.rarity_weights) do
+    local share = ((counts[rarity] or 0) / N) * 100
+    assert(math.abs(share - weight) <= 8,
+      string.format("Rarity %s share %.1f%% deviates more than 8pp from weight %d%%",
+        rarity, share, weight))
+  end
 end
-print("2.3 Joker pool composition: passed")
+print("2.3 Joker rarity distribution: passed")
 
 -- ── 7. Save/Load round trip ───────────────────────────────────────────────────
 do
@@ -208,8 +211,6 @@ do
   local saved_joker_hand = {}
   for i = 1, #saved.jokers.hand do saved_joker_hand[i] = saved.jokers.hand[i] end
   local saved_used_this_turn = saved.jokers.used_this_turn
-  local saved_pool_size = #saved.jokers.pool
-  local saved_played_pile_size = #saved.jokers.played_pile
 
   deck = Deck.new(1)
   hand = deck:draw(3)
@@ -232,8 +233,6 @@ do
     assert(S.jokers.hand[i] == saved_joker_hand[i], "joker hand[" .. i .. "] mismatch")
   end
   assert(S.jokers.used_this_turn == saved_used_this_turn, "used_this_turn mismatch")
-  assert(#S.jokers.pool == saved_pool_size, "joker pool size mismatch")
-  assert(#S.jokers.played_pile == saved_played_pile_size, "joker played_pile size mismatch")
   assert(#hand == #saved.hand,             "hand size mismatch")
 end
 print("Save/Load round trip test: passed")
@@ -305,18 +304,15 @@ end
 print("2.4 angel effect: passed")
 
 -- ── Joker cap overflow test ──────────────────────────────────────────────────
--- Rule Book: max 5 jokers in hand; jokers gained while at cap overflow to the
--- played pile (so they can recycle later), they must NOT grow the hand past 5.
+-- Rule Book: max 5 jokers in hand; draws while at cap must NOT grow the hand.
 do
   local S = {}
   Jokers.init(S, love.math)
   -- Force the hand to already sit at the cap of 5.
   S.jokers.hand = { "bicycle", "bicycle", "bicycle", "bicycle", "bicycle" }
-  local played_before = #S.jokers.played_pile
   -- Attempt to gain a 6th joker.
   Jokers.gain_from_pool(S, 1, love.math)
   assert(#S.jokers.hand == 5, "joker hand grew past cap: got "..#S.jokers.hand)
-  assert(#S.jokers.played_pile >= played_before + 1, "overflow joker did not land in played_pile")
 end
 print("Joker cap overflow test: passed")
 

@@ -22,7 +22,6 @@ function M.init(S)
   if S.meta.threshold == nil then S.meta.threshold = 1 end
   S.meta.turns = S.meta.turns or 0
   if S.meta.score == nil then S.meta.score = 0 end
-  if S.meta.punish_level == nil then S.meta.punish_level = 0 end -- +1 every 30 moves (hook later)
 end
 
 function M.get_award(threshold, hand_name)
@@ -35,7 +34,7 @@ end
 --   T1 = 2 × (T1 award). Each subsequent threshold = ceil(previous × 2.25).
 --   Always compounds from T1 base, NOT from the current threshold's award.
 local function penalty_for_threshold(t, hand_name)
-  t = clamp_threshold(t)
+  t = math.min(3, clamp_threshold(t)) -- game ends at T3; cap for safety
   -- T1 base: always 2 × T1 award (Rule Book canonical formula)
   local base = M.get_award(1, hand_name) * 2
   if t == 1 then return base end
@@ -67,7 +66,7 @@ function M.target_for(t)
   elseif t == 2 then return 150
   elseif t == 3 then return 300
   end
-  return nil -- T4+ endless (no target)
+  return nil -- safety guard; thresholds beyond T3 do not occur in normal play
 end
 
 function M.is_threshold_complete(S)

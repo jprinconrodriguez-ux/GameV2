@@ -75,7 +75,7 @@ function M.resolve(S, scoring)
 end
 
 -- Canonical source: Rule Book § Attack Probabilities. Tests in tests.lua assert these exact values.
--- T2–T5 probabilities (Rule Book; each shifts low tiers −2, high tiers +2 vs. previous; sum to 100)
+-- T2–T3 probabilities (Rule Book; each shifts low tiers −2, high tiers +2 vs. previous; sum to 100)
 local T2 = {
   ["High Card"] = 19, ["Pair"] = 16, ["Two Pair"] = 14, ["Three of a Kind"] = 12,
   ["Flush"] = 14, ["Straight"] = 10, ["Full House"] = 9, ["Four of a Kind"] = 6,
@@ -84,23 +84,11 @@ local T3 = {
   ["High Card"] = 17, ["Pair"] = 14, ["Two Pair"] = 12, ["Three of a Kind"] = 10,
   ["Flush"] = 16, ["Straight"] = 12, ["Full House"] = 11, ["Four of a Kind"] = 8,
 }
--- TODO: confirm T4/T5 from Rule Book
-local T4 = {
-  ["High Card"] = 15, ["Pair"] = 12, ["Two Pair"] = 10, ["Three of a Kind"] = 8,
-  ["Flush"] = 18, ["Straight"] = 14, ["Full House"] = 13, ["Four of a Kind"] = 10,
-}
--- TODO: confirm T4/T5 from Rule Book
-local T5 = {
-  ["High Card"] = 13, ["Pair"] = 10, ["Two Pair"] = 8, ["Three of a Kind"] = 6,
-  ["Flush"] = 20, ["Straight"] = 16, ["Full House"] = 15, ["Four of a Kind"] = 12,
-}
 
 function M.probs_for_threshold(t)
   if not t or t <= 1 then return T1
   elseif t == 2 then return T2
-  elseif t == 3 then return T3
-  elseif t == 4 then return T4
-  else return T5 end
+  else return T3 end
 end
 
 return M

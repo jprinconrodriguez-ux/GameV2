@@ -5,7 +5,7 @@ local E = {}
 
 -- Safe stub for jokers whose effects are not yet implemented.
 function E.noop(state, ctx)
-  return { ok=true, msg="(Not yet implemented)" }
+  return { ok=true, msg="(No effect yet.)" }
 end
 
 -- Example: Bicycle (Draw 3)
@@ -59,7 +59,7 @@ end
 -- TODO(main.lua): handle steal_choice_pending UI (call E.resolve_steal on pick).
 -- Reveal 2 jokers from the pool. Player keeps 1; the other is permanently removed.
 function E.steal(state, ctx)
-  local pool = state.jokers.pool
+  local pool = state.jokers.pool or {}
   local revealed = {}
   for _=1,2 do
     if #pool == 0 then break end
@@ -78,7 +78,7 @@ function E.resolve_steal(state, chosen_index)
   if kept then
     table.insert(state.jokers.hand, kept)
   end
-  -- The non-chosen ids are discarded permanently (neither pool nor played_pile).
+  -- The non-chosen ids are discarded permanently.
   state.jokers.steal_pending = nil
   state.jokers.steal_choice_pending = nil
   return { ok=true, msg="Steal: kept a joker." }
@@ -140,7 +140,7 @@ end
 -- TODO(main.lua): handle eye_choice_pending UI (call E.resolve_eye on confirm).
 -- Look at the next 10 jokers in the pool and rearrange them in any order.
 function E.eye(state, ctx)
-  local pool = state.jokers.pool
+  local pool = state.jokers.pool or {}
   local n = #pool
   local ids = {}
   local start_index = math.max(1, n - 9)
@@ -223,17 +223,13 @@ function E.angel(state, ctx)
 end
 
 -- Resolve an Angel copy: duplicate the chosen joker into hand (respecting the
--- hand cap — overflow goes to played_pile so it can recycle later).
+-- hand cap — overflow copies are dropped).
 function E.resolve_angel(state, chosen_index)
   local pending = state.jokers.angel_pending
   if not pending then return { ok=false, msg="Angel: nothing pending." } end
   local id = pending.ids[chosen_index]
-  if id then
-    if #state.jokers.hand < hand_cap(state) then
-      table.insert(state.jokers.hand, id)
-    else
-      table.insert(state.jokers.played_pile, id)
-    end
+  if id and #state.jokers.hand < hand_cap(state) then
+    table.insert(state.jokers.hand, id)
   end
   state.jokers.angel_pending = nil
   state.jokers.angel_choice_pending = nil

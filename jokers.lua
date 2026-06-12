@@ -4,45 +4,32 @@ local FX  = require("joker_effects")
 
 local J = {}
 
-local function shuffle(t, rng)
-  for i = #t, 2, -1 do
-    local j
-    if rng then
-      -- `love.math` exposes `random` as a plain function, while
-      -- `RandomGenerator` objects expect a method call. Detect which form
-      -- we received so both cases work.
-      if rng.random == love.math.random then
-        j = rng.random(1, i)
-      else
-        j = rng:random(1, i)
-      end
+-- `love.math` exposes `random` as a plain function, while `RandomGenerator`
+-- objects expect a method call. Detect which form we received so both work.
+local function rand_int(rng, lo, hi)
+  if rng and rng.random then
+    if rng.random == love.math.random then
+      return rng.random(lo, hi)
     else
-      j = love.math.random(1, i)
+      return rng:random(lo, hi)
     end
-    t[i], t[j] = t[j], t[i]
   end
+  return love.math.random(lo, hi)
 end
 
-local function build_pool_from_registry(rng)
-  local by_r = REG.ids_by_rarity()
-  local counts = REG.rarity_counts
-  local pool = {}
-
-  local function add_many(list, n_each)
-    for _,id in ipairs(list) do
-      for _=1,n_each do table.insert(pool, id) end
-    end
+-- Pick a rarity by weighted random using REG.rarity_weights (Rule Book §
+-- Joker Rarity Draw Probabilities).
+local function pick_rarity(rng)
+  local total = 0
+  for _, w in pairs(REG.rarity_weights) do total = total + w end
+  local r = rand_int(rng, 1, total)
+  local acc = 0
+  for rarity, w in pairs(REG.rarity_weights) do
+    acc = acc + w
+    if r <= acc then return rarity end
   end
-
-  if #by_r.common     > 0 then add_many(by_r.common,     counts.common    or 0) end
-  if #by_r.uncommon   > 0 then add_many(by_r.uncommon,   counts.uncommon  or 0) end
-  if #by_r.rare       > 0 then add_many(by_r.rare,       counts.rare      or 0) end
-  if #by_r.epic       > 0 then add_many(by_r.epic,       counts.epic      or 0) end
-  if #by_r.legendary  > 0 then add_many(by_r.legendary,  counts.legendary or 0) end
-  if #by_r.mythic     > 0 then add_many(by_r.mythic,     counts.mythic    or 0) end
-
-  shuffle(pool, rng)
-  return pool
+  -- fallback (shouldn't happen)
+  for rarity, _ in pairs(REG.rarity_weights) do return rarity end
 end
 
 -- Returns the joker hand cap (base 5, extendable by modifiers).
@@ -56,21 +43,9 @@ local function current_hand_cap(state)
   return base + bonus
 end
 
-local function reshuffle_if_needed(state, rng)
-  if #state.jokers.pool == 0 and #state.jokers.played_pile > 0 then
-    -- recycle played jokers back into pool
-    for i=#state.jokers.played_pile,1,-1 do
-      table.insert(state.jokers.pool, table.remove(state.jokers.played_pile, i))
-    end
-    shuffle(state.jokers.pool, rng)
-  end
-end
-
 function J.init(state, rng)
   state.jokers = state.jokers or {}
-  state.jokers.pool        = state.jokers.pool        or build_pool_from_registry(rng)
   state.jokers.hand        = state.jokers.hand        or {}
-  state.jokers.played_pile = state.jokers.played_pile or {}
   state.jokers.used_this_turn = false
   state.jokers.modifiers   = state.jokers.modifiers   or {}
 end
@@ -92,7 +67,7 @@ function J.can_use(state)
   return not state.jokers.used_this_turn and #state.jokers.hand > 0
 end
 
--- Use a joker in hand by index; triggers its effect; moves joker to played pile; sets limiter.
+-- Use a joker in hand by index; triggers its effect; sets limiter.
 function J.use(state, hand_index, ctx)
   assert(hand_index and state.jokers.hand[hand_index], "Invalid joker index")
   if state.jokers.used_this_turn then return { ok=false, err="Only one joker per turn." } end
@@ -105,33 +80,27 @@ function J.use(state, hand_index, ctx)
     result = FX[def.effect](state, ctx or {source="joker"})
   end
 
-  table.insert(state.jokers.played_pile, jid)
   state.jokers.used_this_turn = true
   return result
 end
 
--- Gain n jokers from pool (called after a hand is successfully played)
+-- Gain n jokers by weighted random rarity draw (Rule Book § Joker Rarity
+-- Draw Probabilities). There is no physical pool: each draw picks a rarity by
+-- weight, then a uniformly random joker of that rarity from the registry.
 function J.gain_from_pool(state, n, rng)
   n = n or 1
+  local by_r = REG.ids_by_rarity()
   for _=1,n do
-    reshuffle_if_needed(state, rng)
-    if #state.jokers.pool == 0 then break end
-
-    local jid = table.remove(state.jokers.pool)
-    -- Respect (cap + bonuses). If cap reached, send to played_pile as overflow (optional rule), or drop.
+    -- Respect (cap + bonuses). Draws while at cap are dropped.
     local cap = current_hand_cap(state)
-    if #state.jokers.hand < cap then
+    if #state.jokers.hand >= cap then break end
+    local rarity = pick_rarity(rng)
+    local ids = by_r[rarity]
+    if ids and #ids > 0 then
+      local jid = ids[rand_int(rng, 1, #ids)]
       table.insert(state.jokers.hand, jid)
-    else
-      -- Overflow rule: by default, overflow goes to played_pile so it can recycle later.
-      table.insert(state.jokers.played_pile, jid)
     end
   end
-end
-
--- Call when a full poker hand is played/resolved to grant 1 joker
-function J.on_hand_played(state, rng)
-  J.gain_from_pool(state, 1, rng)
 end
 
 -- Convenience for UI/debug: returns shallow copies
@@ -139,8 +108,6 @@ function J.snapshot(state)
   local function copy(t) local r={} for i,v in ipairs(t) do r[i]=v end return r end
   return {
     hand = copy(state.jokers.hand),
-    pool = #state.jokers.pool,
-    played = #state.jokers.played_pile,
     used_this_turn = state.jokers.used_this_turn,
     cap = current_hand_cap(state),
   }

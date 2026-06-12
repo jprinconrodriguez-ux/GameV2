@@ -30,15 +30,15 @@ R.all = {
   { id="peacock",     name="Peacock Joker", rarity="mythic",    jtype="active",    effect="noop"           },  -- TODO(M4): needs timed effect system
 }
 
--- How many copies of each rarity (per distinct type) enter the pool.
--- Source of truth: Rule Book — Joker Deck Composition (copies per type).
-R.rarity_counts = {
-  common    = 20,
-  uncommon  = 15,
-  rare      = 12,
-  epic      =  6,
-  legendary =  2,
-  mythic    =  1,
+-- Weighted draw probabilities per rarity (must sum to 100).
+-- Source of truth: Rule Book — Joker Rarity Draw Probabilities.
+R.rarity_weights = {
+  common    = 33,
+  uncommon  = 26,
+  rare      = 19,
+  epic      = 13,
+  legendary =  6,
+  mythic    =  3,
 }
 
 -- Utility: list of IDs by rarity

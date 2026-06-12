@@ -10,7 +10,7 @@ local JokerReg = require("joker_registry")
 local SaveLoad = require("saveload")
 
 -- === CONSTANTS (safe defaults) ===
-local HAND_START = HAND_START or 10   -- starting hand size
+local HAND_START = HAND_START or 7    -- starting hand size
 -- Card hand cap (max cards held). Separate from the joker hand cap (max 5, in jokers.lua).
 local HAND_MAX   = HAND_MAX   or 20   -- absolute cap
 local NUM_DECKS  = NUM_DECKS  or 2    -- SP default; MP later = players + 1
@@ -27,7 +27,7 @@ local font
 local currentSort = "rank"
 
 -- Buttons
-local UI = { overlay = nil }
+local UI = { overlay = nil, jokerMenuOpen = false }
 
 -- Button row sits in the strip between the joker row (ends at JOKER_Y+JOKER_H=340)
 -- and the card hand (HAND_Y=380): y=344, h=30 → ends at 374, 6px above the cards.
@@ -36,7 +36,10 @@ local BTN_RANK    = {x=160, y=344, w=110, h=30, label="Sort: Rank"}
 local BTN_SUIT    = {x=280, y=344, w=110, h=30, label="Sort: Suit"}
 local BTN_SAVE   = {x=400, y=344, w=90,  h=30, label="Save"}
 local BTN_LOAD   = {x=500, y=344, w=90,  h=30, label="Load"}
+local BTN_SKIP       = {x=600, y=344, w=90,  h=30, label="Skip"}    -- DEBUG: playtesting skip
+local BTN_JOKER_MENU = {x=700, y=344, w=110, h=30, label="Jokers"}  -- DEBUG: playtesting joker inject
 local BTN_NEXT_T = {x=0, y=0, w=140, h=36, label="Next"}  -- overlay button; positioned relative to panel, untouched
+local BTN_START  = {x=0, y=0, w=160, h=44, label="Start"} -- title screen; positioned in love.draw
 
 -- SAVE/LOAD
 -- Bare filename (no leading "/" or "./"): love.filesystem resolves this to LÖVE's
@@ -87,8 +90,9 @@ local function setStatus(s) statusMsg = s or "" end
 
 local S = {}
 
--- Forward declaration
+-- Forward declarations
 local nextTurn
+local restartGame
 
 -- === SAFE HELPERS ===
 
@@ -195,14 +199,32 @@ end
 local function advanceThreshold()
   if not S.meta then return end
   local cur = S.meta.threshold or 1
-  local nextT = math.min(5, cur + 1)
-  S.meta.threshold = nextT
+  if cur >= 3 then
+    -- T3 was just completed: the game ends here. Show the win overlay instead
+    -- of advancing (its button restarts the game).
+    GS.phase = "THRESHOLD"
+    UI.overlay = { kind = "win", message = "You Win!" }
+    return
+  end
+  S.meta.threshold = cur + 1
   if Scoring and Scoring.reset_for_next_threshold then Scoring.reset_for_next_threshold(S) end
   -- Joker hand intentionally NOT reset here; jokers carry over between thresholds per the rules.
+  GS.playedHands = {}  -- clear the checklist for the new tier
   mergePilesIntoDeck()
   UI.overlay = nil
   GS.phase = "MAIN"
   nextTurn()
+end
+
+-- Overlay confirm: "Next" advances the threshold; "Restart" (win overlay) restarts.
+local function confirmOverlay()
+  if not (UI and UI.overlay) then return end
+  if UI.overlay.kind == "win" then
+    UI.overlay = nil
+    restartGame()
+  else
+    advanceThreshold()
+  end
 end
 
 -- Layout
@@ -282,10 +304,20 @@ local function enterEndPhase()
     local res = Attacks.resolve(S, Scoring)
     if res and res.penalized then
       setStatus("Attack: "..res.target.." ⚠  -" .. tostring(res.penalty) .. " pts")
+      S.combat.correct_streak = 0
     elseif res and res.canceled then
       setStatus("Attack canceled.")
+      S.combat.correct_streak = 0
     elseif res and res.protected then
-      setStatus("Attack avoided by playing "..res.target..".")
+      -- 3 correct defenses in a row grant 1 joker
+      S.combat.correct_streak = (S.combat.correct_streak or 0) + 1
+      if S.combat.correct_streak >= 3 then
+        if Jokers then Jokers.gain_from_pool(S, 1, love.math) end
+        S.combat.correct_streak = 0
+        setStatus("Attack avoided by playing "..res.target..".  Streak bonus: +1 Joker!")
+      else
+        setStatus("Attack avoided by playing "..res.target..".")
+      end
     end
   end
   nextTurn()
@@ -396,11 +428,13 @@ local function loadFromSlot(path)
 end
 
 -- Restart
-local function restartGame()
+restartGame = function()
   deck = Deck.new(NUM_DECKS)
   S.meta = nil
   S.jokers = nil
+  S.combat = nil
   selectedJoker = nil
+  UI.jokerMenuOpen = false
   if Scoring then Scoring.init(S) end
   if Jokers then
     Jokers.init(S, love.math)
@@ -514,6 +548,56 @@ local function drawChecklistUI()
   end
 end
 
+-- === Joker debug menu (DEBUG: playtesting joker inject) ===
+local JMENU_ROW_H = 22
+local function jokerMenuPanelRect()
+  local ww = love.graphics.getWidth()
+  local pw = 300
+  local ph = 40 + (#JokerReg.all * JMENU_ROW_H) + 10
+  local px = ww - pw - 10
+  local py = 10
+  return px, py, pw, ph
+end
+
+local function drawJokerMenu()
+  local px, py, pw, ph = jokerMenuPanelRect()
+  love.graphics.setColor(0.12,0.12,0.18,0.95)
+  love.graphics.rectangle("fill", px, py, pw, ph, 8, 8)
+  love.graphics.setColor(1,1,1)
+  love.graphics.rectangle("line", px, py, pw, ph, 8, 8)
+  love.graphics.print("Joker Menu (debug)", px+10, py+10)
+  -- Close button (top-right of panel)
+  love.graphics.rectangle("line", px+pw-70, py+8, 60, 22, 4, 4)
+  love.graphics.printf("Close", px+pw-70, py+11, 60, "center")
+  local ry = py + 40
+  for _, def in ipairs(JokerReg.all) do
+    love.graphics.print(def.name.."  ("..def.rarity..")", px+14, ry+2)
+    ry = ry + JMENU_ROW_H
+  end
+  love.graphics.setColor(1,1,1)
+end
+
+-- Returns true if the click was consumed by the joker menu.
+local function jokerMenuClick(x, y)
+  local px, py, pw, ph = jokerMenuPanelRect()
+  if pointInRect(x, y, {x=px+pw-70, y=py+8, w=60, h=22}) then
+    UI.jokerMenuOpen = false
+    return true
+  end
+  local ry = py + 40
+  for _, def in ipairs(JokerReg.all) do
+    if pointInRect(x, y, {x=px+10, y=ry, w=pw-20, h=JMENU_ROW_H}) then
+      -- DEBUG: playtesting joker inject (bypasses the joker hand cap)
+      table.insert(S.jokers.hand, def.id)
+      UI.jokerMenuOpen = false
+      setStatus("DEBUG: added "..def.name.." to joker hand.")
+      return true
+    end
+    ry = ry + JMENU_ROW_H
+  end
+  return pointInRect(x, y, {x=px, y=py, w=pw, h=ph})
+end
+
 -- LOVE callbacks
 function love.load()
   love.window.setTitle("Jokers' Gambit - Prototype (Milestone 2)")
@@ -521,13 +605,27 @@ function love.load()
   font = love.graphics.newFont(16)
   love.graphics.setFont(font)
 
-  restartGame()
+  -- Show the title screen first; restartGame() runs when the player clicks Start.
+  GS.phase = "TITLE"
 end
 
 function love.mousepressed(x, y, b)
   if b ~= 1 then return end
+
+  if GS.phase == "TITLE" then
+    if pointInRect(x, y, BTN_START) then restartGame() end
+    return
+  end
+
   if UI and UI.overlay then
-    if pointInRect(x, y, BTN_NEXT_T) then advanceThreshold() end
+    if pointInRect(x, y, BTN_NEXT_T) then confirmOverlay() end
+    return
+  end
+
+  -- Joker debug menu sits above everything except the win/threshold overlay
+  if UI.jokerMenuOpen then
+    if jokerMenuClick(x, y) then return end
+    UI.jokerMenuOpen = false
     return
   end
 
@@ -564,6 +662,19 @@ function love.mousepressed(x, y, b)
   elseif pointInRect(x, y, BTN_LOAD) then
     loadFromSlot(SAVE_SLOT)
     return
+  elseif pointInRect(x, y, BTN_SKIP) then
+    -- DEBUG: playtesting skip — meet the current threshold target instantly.
+    if GS.phase == "MAIN" and S.meta then
+      S.meta.score = Scoring.target_for(S.meta.threshold) or S.meta.score
+      for _, name in ipairs(Rules.CATEGORIES) do GS.playedHands[name] = true end
+      setStatus("DEBUG: skipped to threshold target.")
+      enterEndPhase()
+    end
+    return
+  elseif pointInRect(x, y, BTN_JOKER_MENU) then
+    -- DEBUG: playtesting joker inject
+    UI.jokerMenuOpen = not UI.jokerMenuOpen
+    return
   end
 
   if GS.phase == "WIN" then
@@ -596,8 +707,13 @@ function love.keypressed(key)
     return
   end
 
+  if GS.phase == "TITLE" then
+    if key == "return" or key == "kpenter" then restartGame() end
+    return
+  end
+
   if UI and UI.overlay then
-    if key == "return" or key == "kpenter" then advanceThreshold() end
+    if key == "return" or key == "kpenter" then confirmOverlay() end
     return
   end
   if key == "return" or key == "kpenter" then
@@ -652,7 +768,6 @@ function love.keypressed(key)
       end
       setStatus(msg)
       if Attacks then Attacks.note_played_this_turn(S, cat) end
-      if Jokers then Jokers.on_hand_played(S, love.math) end
 
       -- Threshold completion check (T1–T3)
       -- Win requires BOTH reaching the score target AND completing all 8 categories (T3 only).
@@ -775,6 +890,19 @@ function love.keypressed(key)
 end
 
 function love.draw()
+  -- Title screen: draw only the game name and the Start button.
+  if GS.phase == "TITLE" then
+    local ww, wh = love.graphics.getWidth(), love.graphics.getHeight()
+    love.graphics.setColor(0.08,0.08,0.14)
+    love.graphics.rectangle("fill", 0, 0, ww, wh)
+    love.graphics.setColor(1,1,1)
+    love.graphics.printf("Jokers' Gambit", 0, math.floor(wh*0.40), ww, "center")
+    BTN_START.x = math.floor((ww - BTN_START.w)/2)
+    BTN_START.y = math.floor(wh*0.40) + 60
+    drawButton(BTN_START)
+    return
+  end
+
    if statusMsg and statusMsg ~= "" then
     local sx, sy = 40, 10
     local sw = math.min(font:getWidth(statusMsg) + 20, love.graphics.getWidth() - 80)
@@ -801,16 +929,18 @@ function love.draw()
   if S and S.meta then
     local t = (S.meta and S.meta.threshold) or 1
     local tgt = Scoring and Scoring.target_for and Scoring.target_for(t) or nil
-    if tgt then
-      love.graphics.print("Score: "..tostring(S.meta.score).." / "..tostring(tgt).."   (T"..tostring(t)..")", 40, hud_y)
-    else
-      love.graphics.print("Score: "..tostring(S.meta.score).."   (T"..tostring(t).." — Endless)", 40, hud_y)
-    end
+    love.graphics.print("Score: "..tostring(S.meta.score).." / "..tostring(tgt or "—").."   (T"..tostring(t)..")", 40, hud_y)
     hud_y = hud_y + 20
   end
   -- HUD line 3: ~y=100 (Current attack) — only when an attack is announced
   if S and S.combat and S.combat.current_attack then
     love.graphics.print("Attack → "..S.combat.current_attack, 40, hud_y)
+    hud_y = hud_y + 20
+  end
+  -- HUD: correct-defense streak (3 in a row grants a joker)
+  local streak = (S and S.combat and S.combat.correct_streak) or 0
+  if streak > 0 then
+    love.graphics.print("Streak: "..tostring(streak).."/3 ✓", 40, hud_y)
     hud_y = hud_y + 20
   end
   -- HUD line 4: ~y=120 (Hand size / max)
@@ -829,6 +959,8 @@ function love.draw()
   drawButton(BTN_SUIT)
   drawButton(BTN_SAVE)
   drawButton(BTN_LOAD)
+  drawButton(BTN_SKIP)        -- DEBUG: playtesting skip
+  drawButton(BTN_JOKER_MENU)  -- DEBUG: playtesting joker inject
 -- Checklist UI (2.2) + win / end banners
   drawChecklistUI()
 
@@ -844,6 +976,11 @@ function love.draw()
   -- Hand
   for i, c in ipairs(hand) do
     drawCard(c, i)
+  end
+
+  -- Joker debug menu (on top of everything except the win/threshold overlay)
+  if UI.jokerMenuOpen then
+    drawJokerMenu()
   end
 
   -- Threshold/Win overlay (draw last so it appears above other elements)
@@ -862,6 +999,7 @@ function love.draw()
     love.graphics.printf(msg, px+20, py+20, pw-40, "center")
     BTN_NEXT_T.x = px + math.floor((pw-140)/2)
     BTN_NEXT_T.y = py + ph - 50
+    BTN_NEXT_T.label = (UI.overlay.kind == "win") and "Restart" or "Next"
     drawButton(BTN_NEXT_T)
     love.graphics.setColor(1,1,1)
   end

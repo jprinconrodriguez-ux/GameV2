@@ -18,6 +18,7 @@ function M.build_state(deck, hand, GS, S, UI)
   local gs = {
     phase = GS.phase,
     current_attack = (S and S.combat and S.combat.current_attack) or nil,
+    correct_streak = (S and S.combat and S.combat.correct_streak) or 0,
     overlay = (UI and UI.overlay and UI.overlay.kind) or nil,
     turn  = GS.turn,
     playedHands = {},
@@ -31,14 +32,10 @@ function M.build_state(deck, hand, GS, S, UI)
   local jokerState
   if S.jokers then
     jokerState = {
-      pool = {},
       hand = {},
-      played_pile = {},
       used_this_turn = S.jokers.used_this_turn
     }
-    for i,id in ipairs(S.jokers.pool or {}) do jokerState.pool[i] = id end
     for i,id in ipairs(S.jokers.hand or {}) do jokerState.hand[i] = id end
-    for i,id in ipairs(S.jokers.played_pile or {}) do jokerState.played_pile[i] = id end
   end
 
   local scoring
@@ -85,6 +82,7 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
 
   S.combat = S.combat or {}
   S.combat.current_attack = state.gs and state.gs.current_attack or S.combat.current_attack
+  S.combat.correct_streak = (state.gs and state.gs.correct_streak) or 0
 
   if state.scoring then
     S.meta = {}
@@ -97,12 +95,8 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
   if Jokers then
     Jokers.init(S, love and love.math or math)
     if state.jokers then
-      S.jokers.pool = {}
       S.jokers.hand = {}
-      S.jokers.played_pile = {}
-      for i,id in ipairs(state.jokers.pool or {}) do S.jokers.pool[i] = id end
       for i,id in ipairs(state.jokers.hand or {}) do S.jokers.hand[i] = id end
-      for i,id in ipairs(state.jokers.played_pile or {}) do S.jokers.played_pile[i] = id end
       S.jokers.used_this_turn = state.jokers.used_this_turn
     end
   end
