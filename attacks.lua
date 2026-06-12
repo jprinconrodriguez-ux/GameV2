@@ -1,6 +1,8 @@
 -- attacks.lua
 -- Announces a random target hand each turn and resolves penalty if missed.
 
+local Effects = require("effects")
+
 local M = {}
 
 -- T1 probabilities (Rule Book)
@@ -49,6 +51,14 @@ function M.resolve(S, scoring)
   S.combat = S.combat or {}
   local target = S.combat.current_attack
   if not target then return {resolved=false} end
+  -- Anti-Joker: while the shield is up, attacks are nullified entirely
+  -- (no penalty, no score change). Expiry is handled by Effects.tick.
+  if Effects.has(S, "attack_shield") then
+    local res = { resolved=true, shielded=true, target=target }
+    S.combat.current_attack = nil
+    S.combat.just_played = nil
+    return res
+  end
   if S.combat.cancel_current_attack then
     -- cleared by Skull or similar
     local res = { resolved=true, canceled=true, target=target }
@@ -58,11 +68,37 @@ function M.resolve(S, scoring)
     S.combat.just_played = nil
     return res
   end
+  -- Purge: attacks targeting a purged hand neither award nor deduct points.
+  if Effects.has(S, "purge_immunity") then
+    local p = Effects.get(S, "purge_immunity")
+    for _, h in ipairs((p and p.hands) or {}) do
+      if h == target then
+        local res = { resolved=true, purged=true, target=target }
+        S.combat.current_attack = nil
+        S.combat.just_played = nil
+        return res
+      end
+    end
+  end
   if S.combat.just_played == target then
     local res = { resolved=true, protected=true, target=target }
     S.combat.current_attack = nil
     S.combat.just_played = nil
     return res
+  end
+  -- Cybernetic: a hacked hand in the Protected ("p") state this turn takes no penalty.
+  if Effects.has(S, "cybernetic") then
+    local p = Effects.get(S, "cybernetic")
+    local states = p and p.hacks and p.hacks[target]
+    if states then
+      local idx = math.max(1, math.min(3, p.turn_index or 1))
+      if states[idx] == "p" then
+        local res = { resolved=true, protected=true, target=target }
+        S.combat.current_attack = nil
+        S.combat.just_played = nil
+        return res
+      end
+    end
   end
   -- penalty
   local pts = 0

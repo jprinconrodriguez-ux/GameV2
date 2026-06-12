@@ -468,4 +468,380 @@ do
 end
 print("Skull halve test: passed")
 
+-- ═══════════════════════════ M4 TESTS ═══════════════════════════
+local Effects = require("effects")
+local Eval    = require("evaluator")
+local Rules   = require("rules")
+
+-- ── M4 4.1: resolve_steal places the chosen id in hand, clears the flag ──────
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.pool = { "bicycle", "skull", "steal" }
+  FX.steal(S, {})
+  local ids = S.jokers.steal_pending.ids
+  local r = FX.resolve_steal(S, 1)
+  assert(r.ok, "resolve_steal should succeed")
+  assert(S.jokers.hand[#S.jokers.hand] == ids[1], "chosen joker should be in hand")
+  assert(not S.jokers.steal_choice_pending, "steal pending flag should clear")
+  assert(S.jokers.steal_pending == nil, "steal pending data should clear")
+end
+print("M4 resolve_steal: passed")
+
+-- ── M4 4.1: resolve_acrobat removes chosen cards from deck, clears the flag ──
+do
+  local deck = Deck.new(1)
+  local hand = {}
+  local S = {}
+  Jokers.init(S, love.math)
+  local before = #deck.cards
+  FX.acrobat(S, { deck = deck })
+  assert(S.jokers.acrobat_choice_pending == true, "acrobat should set pending flag")
+  assert(#S.jokers.acrobat_pending.cards == 10, "acrobat should peek 10 cards")
+  local picked = { S.jokers.acrobat_pending.cards[1], S.jokers.acrobat_pending.cards[3] }
+  local r = FX.resolve_acrobat(S, { deck = deck, hand = hand }, { 1, 3 })
+  assert(r.ok, "resolve_acrobat should succeed")
+  assert(#deck.cards == before - 2, "two cards should leave the deck")
+  assert(#hand == 2, "two cards should join the hand")
+  for _, p in ipairs(picked) do
+    local found = false
+    for _, c in ipairs(hand) do if c == p then found = true end end
+    assert(found, "picked card missing from hand")
+  end
+  assert(not S.jokers.acrobat_choice_pending, "acrobat pending flag should clear")
+end
+print("M4 resolve_acrobat: passed")
+
+-- ── M4 4.1: resolve_eye writes the new order back into the pool ──────────────
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.pool = { "p1","p2","p3","p4","p5","p6","p7","p8","p9","p10","p11","p12" }
+  FX.eye(S, {})
+  assert(#S.jokers.eye_pending.ids == 10, "eye should peek 10 jokers")
+  local new_order = {}
+  for i = #S.jokers.eye_pending.ids, 1, -1 do
+    table.insert(new_order, S.jokers.eye_pending.ids[i])
+  end
+  local r = FX.resolve_eye(S, new_order)
+  assert(r.ok, "resolve_eye should succeed")
+  local n = #S.jokers.pool
+  for k, id in ipairs(new_order) do
+    assert(S.jokers.pool[n - (k - 1)] == id,
+      "pool slot "..(n - (k - 1)).." should hold "..id)
+  end
+  assert(not S.jokers.eye_choice_pending, "eye pending flag should clear")
+end
+print("M4 resolve_eye: passed")
+
+-- ── M4 4.1: resolve_angel copies the chosen joker (respects cap) ─────────────
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.hand = { "bicycle", "skull" }
+  FX.angel(S, {})
+  local r = FX.resolve_angel(S, 2)
+  assert(r.ok, "resolve_angel should succeed")
+  assert(#S.jokers.hand == 3 and S.jokers.hand[3] == "skull", "copy should land in hand")
+  assert(not S.jokers.angel_choice_pending, "angel pending flag should clear")
+  -- At the cap, the copy is dropped.
+  S.jokers.hand = { "bicycle", "bicycle", "bicycle", "bicycle", "bicycle" }
+  FX.angel(S, {})
+  FX.resolve_angel(S, 1)
+  assert(#S.jokers.hand == 5, "angel must not grow the hand past the cap")
+end
+print("M4 resolve_angel: passed")
+
+-- ── M4 4.2: Effects engine round-trip, tick, coexistence, clear_tag ──────────
+do
+  local S = {}
+  Effects.add(S, "attack_shield", 3, { no_carry = true }, "anti")
+  assert(Effects.has(S, "attack_shield"), "add+has round trip")
+  assert(Effects.get(S, "attack_shield").no_carry == true, "add+get round trip")
+  Effects.add(S, "score_multiplier", 2, { mult = 1.5 }, "galaxy")
+  assert(Effects.has(S, "attack_shield") and Effects.has(S, "score_multiplier"),
+    "two effects with different ids must coexist")
+  assert(Effects.get(S, "score_multiplier").mult == 1.5, "payloads must not interfere")
+  Effects.tick(S)  -- shield→2, mult→1
+  Effects.tick(S)  -- shield→1, mult expired
+  assert(Effects.has(S, "attack_shield"), "shield should survive 2 ticks")
+  assert(not Effects.has(S, "score_multiplier"), "multiplier should expire after 2 ticks")
+  Effects.tick(S)  -- shield expired
+  assert(not Effects.has(S, "attack_shield"), "shield should expire after 3 ticks")
+
+  local S2 = {}
+  Effects.add(S2, "a", 5, { no_carry = true }, "x")
+  Effects.add(S2, "b", 5, { no_carry = false }, "y")
+  Effects.clear_tag(S2, "no_carry")
+  assert(not Effects.has(S2, "a"), "no_carry effect must be removed by clear_tag")
+  assert(Effects.has(S2, "b"), "carrying effect must survive clear_tag")
+
+  -- Cybernetic tick keeps turn_index in sync (incremented before the decrement).
+  local S3 = {}
+  Effects.add(S3, "cybernetic", 3, { hacks = {}, turn_index = 0, no_carry = true }, "cybernetic")
+  Effects.tick(S3)
+  assert(Effects.get(S3, "cybernetic").turn_index == 1, "tick should advance cybernetic turn_index")
+  assert(S3.active_effects[1].turns_remaining == 2, "tick should decrement turns_remaining")
+end
+print("M4 effects engine: passed")
+
+-- ── M4 4.3: Anti-Joker shields attacks for 3 turns then expires ──────────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  FX.anti_joker(S, {})
+  assert(Effects.has(S, "attack_shield"), "anti_joker should add attack_shield")
+  assert(Effects.get(S, "attack_shield").no_carry == true, "shield must not carry thresholds")
+  S.combat = { current_attack = "Pair" }
+  local res = Attacks.resolve(S, Scoring)
+  assert(res.shielded and res.target == "Pair", "resolve should report shielded")
+  assert(S.meta.score == 0, "shielded attack must not change score")
+  Effects.tick(S); Effects.tick(S); Effects.tick(S)
+  assert(not Effects.has(S, "attack_shield"), "shield should expire after 3 turns")
+  S.combat = { current_attack = "Pair" }
+  res = Attacks.resolve(S, Scoring)
+  assert(res.penalized and res.penalty == 4, "attacks must penalize again after expiry")
+end
+print("M4 anti-joker: passed")
+
+-- ── M4 4.3: Purge protects selected hands; others still penalize ─────────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  FX.purge(S, {})
+  assert(S.jokers.purge_pending == true, "purge should open the selection")
+  S.jokers.purge_selected = { "Pair", "Flush" }
+  local r = FX.resolve_purge(S)
+  assert(r.ok and not S.jokers.purge_pending, "resolve_purge should clear pending state")
+  local p = Effects.get(S, "purge_immunity")
+  assert(p and p.hands[1] == "Pair" and p.hands[2] == "Flush",
+    "purge payload must contain the selected hands")
+  S.combat = { current_attack = "Pair" }
+  local res = Attacks.resolve(S, Scoring)
+  assert(res.purged and S.meta.score == 0, "purged hand must take no penalty")
+  S.combat = { current_attack = "High Card" }
+  res = Attacks.resolve(S, Scoring)
+  assert(res.penalized and res.penalty == 2, "non-purged hand must still penalize")
+end
+print("M4 purge: passed")
+
+-- ── M4 4.4: Cybernetic states (per-turn read, double, protected, lose) ───────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  Effects.add(S, "cybernetic", 3,
+    { hacks = { ["Pair"] = { "d", "p", "l" } }, turn_index = 1, no_carry = true },
+    "cybernetic")
+  -- turn 1: "d" doubles the award (Pair T1 = 2 → 4)
+  assert(Scoring.apply_award(S, "Pair") == 4, "double state should double the award")
+  S.meta.score = 0
+  -- turn 2: "p" protects against the attack
+  Effects.get(S, "cybernetic").turn_index = 2
+  S.combat = { current_attack = "Pair" }
+  local res = Attacks.resolve(S, Scoring)
+  assert(res.protected, "protected state should block the attack")
+  assert(S.meta.score == 0, "protected attack must not change score")
+  -- turn 3: "l" zeroes the award
+  Effects.get(S, "cybernetic").turn_index = 3
+  assert(Scoring.apply_award(S, "Pair") == 0, "lose state should award 0 points")
+  -- no_carry removal on threshold advance
+  Effects.clear_tag(S, "no_carry")
+  assert(not Effects.has(S, "cybernetic"), "cybernetic must not carry thresholds")
+
+  -- Generated payload shape: 2 distinct hands × 3 valid per-turn states.
+  local S2 = {}
+  Jokers.init(S2, love.math)
+  FX.cybernetic(S2, { rng = love.math })
+  local pay = Effects.get(S2, "cybernetic")
+  assert(pay.no_carry == true and pay.turn_index == 0, "cybernetic payload defaults")
+  local hands = 0
+  for h, sts in pairs(pay.hacks) do
+    hands = hands + 1
+    assert(#sts == 3, "each hacked hand needs 3 turn states")
+    for _, st in ipairs(sts) do
+      assert(st == "n" or st == "d" or st == "p" or st == "l", "invalid state key "..tostring(st))
+    end
+  end
+  assert(hands == 2, "cybernetic must hack exactly 2 hands")
+end
+print("M4 cybernetic: passed")
+
+-- ── M4 4.5: The Flush doubles only when the attack is also a Flush ───────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  FX.flush_joker(S, {})
+  assert(S.jokers.flush_active == true, "flush joker should arm the flag")
+  S.combat = { current_attack = "Flush" }
+  assert(Scoring.apply_award(S, "Flush") == 16, "Flush vs Flush attack should double (T1: 8→16)")
+  assert(S.jokers.flush_active == nil, "flag consumed after a Flush play")
+  S.meta.score = 0
+  FX.flush_joker(S, {})
+  S.combat = { current_attack = "Pair" }
+  assert(Scoring.apply_award(S, "Flush") == 8, "no double when attack is not a Flush")
+  assert(S.jokers.flush_active == nil, "flag consumed even without doubling")
+end
+print("M4 the flush: passed")
+
+-- ── M4 4.5: The Trader unmarks a hand; next hand scores double ───────────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  local played = { ["Pair"] = true }
+  local r = FX.trader(S, { rng = love.math, playedHands = played })
+  assert(r.ok, "trader should succeed with a marked hand")
+  assert(played["Pair"] == nil, "trader must unmark the chosen hand")
+  assert(S.jokers.trader_double == true, "trader must arm the double")
+  assert(Scoring.apply_award(S, "Pair") == 4, "next hand doubles (T1 Pair: 2→4)")
+  assert(S.jokers.trader_double == false, "double consumed after one hand")
+  S.meta.score = 0
+  assert(Scoring.apply_award(S, "Pair") == 2, "subsequent hands score normally")
+  local r2 = FX.trader(S, { rng = love.math, playedHands = {} })
+  assert(r2.ok == false, "trader must fail with no completed hands")
+end
+print("M4 the trader: passed")
+
+-- ── M4 4.5: Four of Clubs bonus (+6 at T1, doubling per threshold) ───────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  S.jokers.hand = { "fourofclubs" }
+  local club_cards = { {suit="♣", rank="9"}, {suit="♥", rank="9"} }
+  local four_cards = { {suit="♥", rank="4"}, {suit="♦", rank="4"} }
+  local plain      = { {suit="♥", rank="9"}, {suit="♦", rank="9"} }
+  assert(Scoring.apply_award(S, "Pair", club_cards) == 2 + 6,  "T1 club bonus = +6")
+  S.meta.threshold = 2
+  assert(Scoring.apply_award(S, "Pair", four_cards) == 4 + 12, "T2 four-rank bonus = +12")
+  S.meta.threshold = 3
+  assert(Scoring.apply_award(S, "Pair", four_cards) == 8 + 24, "T3 bonus = +24")
+  S.meta.threshold = 1
+  assert(Scoring.apply_award(S, "Pair", plain) == 2, "no club/4 → no bonus")
+  S.jokers.hand = {}
+  assert(Scoring.apply_award(S, "Pair", club_cards) == 2, "no bonus without the joker in hand")
+end
+print("M4 four of clubs: passed")
+
+-- ── M4 4.5: Golden Joker auto-scores a marked hand at double value ───────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  local r = FX.golden(S, { rng = love.math, playedHands = { ["Pair"] = true } })
+  assert(r.ok, "golden should succeed")
+  assert(S.meta.score == 4, "golden scores the marked hand twice (T1 Pair: 2×2=4)")
+  S.meta.score = 0
+  r = FX.golden(S, { rng = love.math, playedHands = {} })
+  assert(r.ok and S.meta.score == 0, "golden with empty checklist scores nothing")
+end
+print("M4 golden joker: passed")
+
+-- ── M4 4.5: Galaxy resets the checklist and applies ×1.5 ─────────────────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  local played = { ["Pair"] = true, ["Flush"] = true }
+  local r = FX.galaxy(S, { playedHands = played })
+  assert(r.ok, "galaxy should succeed")
+  assert(next(played) == nil, "galaxy must reset the checklist")
+  local p = Effects.get(S, "score_multiplier")
+  assert(p and p.mult == 1.5 and p.no_carry == true, "galaxy multiplier payload")
+  assert(Scoring.apply_award(S, "Pair") == 3,   "Pair ×1.5: ceil(2×1.5)=3")
+  S.meta.score = 0
+  assert(Scoring.apply_award(S, "Flush") == 12, "Flush ×1.5: 8×1.5=12")
+  Effects.clear_tag(S, "no_carry")
+  assert(not Effects.has(S, "score_multiplier"), "galaxy must not carry thresholds")
+end
+print("M4 galaxy joker: passed")
+
+-- ── M4 4.6/4.7: Peacock and Cute Joker flags ─────────────────────────────────
+-- (advanceThreshold() in main.lua clears peacock_active/peacock_extra_pending;
+-- nextTurn() clears cute_active — UI-loop behaviour, not testable headless.)
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  assert(FX.peacock(S, {}).ok and S.jokers.peacock_active == true,
+    "peacock should arm its flag")
+  assert(FX.cute_joker(S, {}).ok and S.jokers.cute_active == true,
+    "cute joker should arm its flag")
+end
+print("M4 peacock & cute flags: passed")
+
+-- ── M4 4.7: Architect site opens, evaluates, and scores correctly ────────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  assert(FX.architect(S, {}).ok, "architect should succeed")
+  assert(S.jokers.architect_active == true and #S.jokers.architect_site == 0,
+    "architect should open an empty site")
+  -- Simulate the main.lua [A] key: move cards from hand onto the site.
+  local hand = { {suit="♠",rank="9"}, {suit="♥",rank="9"}, {suit="♦",rank="2"} }
+  table.insert(S.jokers.architect_site, table.remove(hand, 2))
+  table.insert(S.jokers.architect_site, table.remove(hand, 1))
+  assert(#hand == 1, "cards moved to the site must leave the hand")
+  local cat = Eval.exact_category(S.jokers.architect_site)
+  assert(cat == "Pair", "site should evaluate as Pair, got "..tostring(cat))
+  assert(Scoring.apply_award(S, cat, S.jokers.architect_site) == 2,
+    "site hand should score the Rule Book award (T1 Pair = 2)")
+end
+print("M4 architect: passed")
+
+-- ── M4 4.8: Save/Load round trip covers new M4 state ─────────────────────────
+do
+  local deck = Deck.new(1)
+  GS:reset()
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  local hand = deck:draw(5)
+  Effects.add(S, "purge_immunity", 4, { hands = { "Pair", "Flush" } }, "purge")
+  S.jokers.flush_active = true
+  S.jokers.peacock_active = true
+  S.jokers.architect_active = true
+  S.jokers.architect_site = { {suit="♣", rank="4"}, {suit="♣", rank="9"} }
+
+  local saved = SaveLoad.build_state(deck, hand, GS, S, {})
+
+  local S2 = {}
+  GS:reset()
+  hand = SaveLoad.apply_state(saved, Deck.new(1), GS, S2, {}, Scoring, Jokers)
+
+  assert(Effects.has(S2, "purge_immunity"), "active effect lost in round trip")
+  local entry
+  for _, e in ipairs(S2.active_effects) do
+    if e.id == "purge_immunity" then entry = e end
+  end
+  assert(entry.turns_remaining == 4, "turns_remaining lost in round trip")
+  assert(entry.payload.hands[1] == "Pair" and entry.payload.hands[2] == "Flush",
+    "effect payload lost in round trip")
+  assert(S2.jokers.flush_active == true,     "flush_active lost in round trip")
+  assert(S2.jokers.peacock_active == true,   "peacock_active lost in round trip")
+  assert(S2.jokers.architect_active == true, "architect_active lost in round trip")
+  assert(#S2.jokers.architect_site == 2,     "architect_site lost in round trip")
+  assert(S2.jokers.architect_site[1].suit == "♣" and S2.jokers.architect_site[1].rank == "4",
+    "architect_site card data lost in round trip")
+end
+print("M4 save/load round trip: passed")
+
+-- ── M4 4.9: registry sanity — only M5 jokers remain noop ─────────────────────
+do
+  for _, def in ipairs(JReg.all) do
+    if def.effect == "noop" then
+      assert(def.id == "invisible" or def.id == "devil" or def.id == "fourofclubs",
+        "unexpected noop joker after M4: "..def.id)
+    else
+      assert(FX[def.effect], "registry references missing effect function: "..tostring(def.effect))
+    end
+  end
+  assert(JReg.by_id["golden"].jtype == "triggered", "golden must be a triggered joker")
+end
+print("M4 registry sanity: passed")
+
 print("\nAll tests passed.")

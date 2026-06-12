@@ -264,4 +264,147 @@ function E.resolve_angel(state, chosen_index)
   return { ok=true, msg="Angel: copied a joker." }
 end
 
+-- ── Anti-Joker (Mythic) ──────────────────────────────────────────────────────
+-- Disable attacks for 3 turns: no penalty, no resolution. Shown active in UI.
+function E.anti_joker(state, ctx)
+  local Effects = require("effects")
+  Effects.add(state, "attack_shield", 3, { no_carry = true }, "anti")
+  return { ok=true, msg="Attacks disabled for 3 turns." }
+end
+
+-- ── Purge (Epic) ─────────────────────────────────────────────────────────────
+-- Player picks 2 hand types; for 5 turns those hands neither award nor deduct
+-- points when they are the attack target. Selection happens in an overlay in
+-- main.lua; resolve_purge fires once both picks are stored in purge_selected.
+function E.purge(state, ctx)
+  state.jokers.purge_pending = true
+  state.jokers.purge_selected = {}
+  return { ok=true, msg="Purge: choose 2 hand types to protect.", pending=true }
+end
+
+function E.resolve_purge(state)
+  local Effects = require("effects")
+  local hands = state.jokers.purge_selected or {}
+  Effects.add(state, "purge_immunity", 5, { hands = hands, no_carry = false }, "purge")
+  state.jokers.purge_pending = nil
+  state.jokers.purge_selected = nil
+  local label = table.concat(hands, " & ")
+  return { ok=true, msg="Purge: "..label.." protected for 5 turns." }
+end
+
+-- ── Cybernetic (Legendary) ───────────────────────────────────────────────────
+-- Randomly hacks 2 hand types for 3 turns. Each turn each hacked hand gets one
+-- of 4 states: Normal 35% ("n"), Double 20% ("d"), Protected 30% ("p"),
+-- Lose 15% ("l"). Cannot carry across thresholds.
+function E.cybernetic(state, ctx)
+  local Effects = require("effects")
+  local Rules = require("rules")
+  local rng = ctx and ctx.rng
+  local i1 = rand_index(rng, #Rules.CATEGORIES)
+  local i2 = rand_index(rng, #Rules.CATEGORIES - 1)
+  if i2 >= i1 then i2 = i2 + 1 end  -- two distinct hands
+  local picks = { Rules.CATEGORIES[i1], Rules.CATEGORIES[i2] }
+  local function roll_state()
+    local r = rand_index(rng, 100)
+    if r <= 35 then return "n"
+    elseif r <= 55 then return "d"
+    elseif r <= 85 then return "p"
+    else return "l" end
+  end
+  local hacks = {}
+  for _, h in ipairs(picks) do
+    hacks[h] = { roll_state(), roll_state(), roll_state() }
+  end
+  Effects.add(state, "cybernetic", 3,
+    { hacks = hacks, turn_index = 0, no_carry = true }, "cybernetic")
+  return { ok=true, msg="Cybernetic: hacked "..picks[1].." & "..picks[2].." for 3 turns." }
+end
+
+-- ── The Flush (Legendary) ────────────────────────────────────────────────────
+-- The next Flush played scores double, but only if the current attacking hand
+-- is also a Flush. Consumed (flag cleared) by scoring.lua when a Flush is played.
+function E.flush_joker(state, ctx)
+  state.jokers.flush_active = true
+  return { ok=true, msg="The Flush: next Flush played scores double if it blocks the attack." }
+end
+
+-- ── The Trader (Legendary) ───────────────────────────────────────────────────
+-- Lose a random completed hand (unmark it from the checklist); the next played
+-- hand scores double points.
+function E.trader(state, ctx)
+  local played = ctx and ctx.playedHands
+  local marked = {}
+  if played then
+    for k, v in pairs(played) do
+      if v then table.insert(marked, k) end
+    end
+  end
+  if #marked == 0 then return { ok=false, msg="No completed hands to lose." } end
+  table.sort(marked)  -- deterministic iteration order before the random pick
+  local chosen = marked[rand_index(ctx and ctx.rng, #marked)]
+  played[chosen] = nil
+  state.jokers.trader_double = true
+  return { ok=true, msg="Trader: lost "..chosen..", next hand scores double." }
+end
+
+-- ── Golden Joker (Mythic, auto-use on acquire) ───────────────────────────────
+-- Auto-scores a random already-marked hand at double its award value the moment
+-- it enters the joker hand (wired in jokers.lua J.gain_joker).
+function E.golden(state, ctx)
+  local Scoring = require("scoring")
+  local played = ctx and ctx.playedHands
+  local marked = {}
+  if played then
+    for k, v in pairs(played) do
+      if v then table.insert(marked, k) end
+    end
+  end
+  if #marked == 0 then return { ok=true, msg="Golden Joker: no completed hands yet." } end
+  table.sort(marked)
+  local chosen = marked[rand_index(ctx and ctx.rng, #marked)]
+  Scoring.apply_award(state, chosen)  -- double = score it twice
+  Scoring.apply_award(state, chosen)
+  return { ok=true, msg="Golden Joker: auto-scored "..chosen.." (×2)." }
+end
+
+-- ── Galaxy Joker (Mythic) ────────────────────────────────────────────────────
+-- Resets the checklist; every hand scores ×1.5 for the rest of this threshold.
+-- 999 turns ≈ rest of threshold; clear_tag on threshold advance removes it.
+function E.galaxy(state, ctx)
+  local Effects = require("effects")
+  if ctx and ctx.playedHands then
+    local keys = {}
+    for k in pairs(ctx.playedHands) do table.insert(keys, k) end
+    for _, k in ipairs(keys) do ctx.playedHands[k] = nil end
+  end
+  Effects.add(state, "score_multiplier", 999, { mult = 1.5, no_carry = true }, "galaxy")
+  return { ok=true, msg="Galaxy: checklist reset. All hands score ×1.5 this threshold." }
+end
+
+-- ── Peacock Joker (Mythic) ───────────────────────────────────────────────────
+-- Grants an extra turn every 5 turns for the rest of the threshold. The turn
+-- scheduling lives in main.lua (nextTurn/love.update); cleared on threshold advance.
+function E.peacock(state, ctx)
+  state.jokers.peacock_active = true
+  return { ok=true, msg="Peacock: extra turn every 5 turns this threshold." }
+end
+
+-- ── Cute Joker (Epic) ────────────────────────────────────────────────────────
+-- Allows playing a second Three of a Kind in the turn it was used. The play
+-- flow in main.lua consumes the flag; nextTurn clears it as a safety net.
+function E.cute_joker(state, ctx)
+  state.jokers.cute_active = true
+  return { ok=true, msg="Cute Joker: you may play a second Three of a Kind this turn." }
+end
+
+-- ── The Architect (Legendary) ────────────────────────────────────────────────
+-- Opens a persistent building site. The player moves cards onto it across
+-- turns ([A] key) and plays it as a bonus hand ([P] key) — both in main.lua.
+-- Site and flag are cleared on threshold advance.
+function E.architect(state, ctx)
+  state.jokers.architect_active = true
+  state.jokers.architect_site = {}
+  return { ok=true, msg="Architect: building site opened. Add cards from hand each turn." }
+end
+
 return E

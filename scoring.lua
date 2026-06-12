@@ -2,6 +2,8 @@
 -- Thresholded scoring and penalties for Solo mode.
 -- Awards double each threshold; penalties scale 2x at T1 then ×2.25 per threshold.
 
+local Effects = require("effects")
+
 local M = {}
 
 local BASE_AWARD_T1 = {
@@ -45,9 +47,64 @@ local function penalty_for_threshold(t, hand_name)
   return cur
 end
 
-function M.apply_award(S, hand_name)
+-- M4: optional third argument `played_cards` (raw card tables) enables the
+-- Four of Clubs triggered passive. Joker scoring hooks apply in this order:
+-- cybernetic hack → The Flush → Trader double → Galaxy multiplier → Four of
+-- Clubs flat bonus.
+function M.apply_award(S, hand_name, played_cards)
   local t = clamp_threshold(S.meta.threshold)
   local pts = M.get_award(t, hand_name)
+
+  -- Cybernetic: hacked hands may score double ("d") or nothing ("l") this turn.
+  if Effects.has(S, "cybernetic") then
+    local p = Effects.get(S, "cybernetic")
+    local states = p and p.hacks and p.hacks[hand_name]
+    if states then
+      local idx = math.max(1, math.min(3, p.turn_index or 1))
+      local st = states[idx]
+      if st == "d" then pts = pts * 2
+      elseif st == "l" then pts = 0 end
+    end
+  end
+
+  -- The Flush: a Flush scores double if the current attack is also a Flush.
+  -- The flag is consumed by any Flush play, whether or not it doubled.
+  if hand_name == "Flush" and S.jokers and S.jokers.flush_active then
+    if S.combat and S.combat.current_attack == "Flush" then
+      pts = pts * 2
+    end
+    S.jokers.flush_active = nil
+  end
+
+  -- The Trader: next played hand scores double.
+  if S.jokers and S.jokers.trader_double then
+    pts = pts * 2
+    S.jokers.trader_double = false
+  end
+
+  -- Galaxy (or any score_multiplier effect): scale the award, rounding up.
+  if Effects.has(S, "score_multiplier") then
+    local p = Effects.get(S, "score_multiplier")
+    pts = math.ceil(pts * ((p and p.mult) or 1))
+  end
+
+  -- Four of Clubs (triggered passive): hands containing a Club or a 4-rank
+  -- score +6 at T1, doubling per threshold.
+  if played_cards and S.jokers and S.jokers.hand then
+    local has_4oc = false
+    for _, jid in ipairs(S.jokers.hand) do
+      if jid == "fourofclubs" then has_4oc = true break end
+    end
+    if has_4oc then
+      for _, c in ipairs(played_cards) do
+        if c.suit == "♣" or tostring(c.rank) == "4" then
+          pts = pts + 6 * (2 ^ (t - 1))
+          break
+        end
+      end
+    end
+  end
+
   S.meta.score = (S.meta.score or 0) + pts
   return pts
 end

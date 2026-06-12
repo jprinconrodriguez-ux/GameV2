@@ -98,10 +98,18 @@ end
 -- Gain a single joker by weighted random rarity draw. Respects the joker hand
 -- cap (base 5 + bonuses); a draw made while at cap is dropped. Returns the joker
 -- ID that was added, or nil if none was added (at cap, or empty rarity bucket).
-function J.gain_joker(state, rng)
+-- Optional ctx is forwarded to auto-use triggered jokers (Golden fires the
+-- moment it enters the hand).
+function J.gain_joker(state, rng, ctx)
   if #state.jokers.hand >= current_hand_cap(state) then return nil end
   local jid = J.draw_random_joker(rng)
-  if jid then table.insert(state.jokers.hand, jid) end
+  if jid then
+    table.insert(state.jokers.hand, jid)
+    local def = REG.by_id[jid]
+    if def and def.jtype == "triggered" and def.effect == "golden" then
+      FX.golden(state, ctx or { rng = rng })
+    end
+  end
   return jid
 end
 
@@ -109,10 +117,10 @@ end
 -- Probabilities). There is no physical pool: each draw picks a rarity by weight,
 -- then a uniformly random joker of that rarity from the registry. Kept for
 -- backward compatibility with callers that gain several jokers at once.
-function J.gain_from_pool(state, n, rng)
+function J.gain_from_pool(state, n, rng, ctx)
   n = n or 1
   for _=1,n do
-    if J.gain_joker(state, rng) == nil and #state.jokers.hand >= current_hand_cap(state) then
+    if J.gain_joker(state, rng, ctx) == nil and #state.jokers.hand >= current_hand_cap(state) then
       break  -- stop early once the hand is full
     end
   end

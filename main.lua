@@ -8,6 +8,8 @@ local Attacks = require("attacks")
 local Jokers = require("jokers")
 local JokerReg = require("joker_registry")
 local SaveLoad = require("saveload")
+local Effects = require("effects")
+local FX = require("joker_effects")
 
 -- === CONSTANTS (safe defaults) ===
 local HAND_START = HAND_START or 7    -- starting hand size
@@ -28,6 +30,13 @@ local currentSort = "rank"
 
 -- Buttons
 local UI = { overlay = nil, jokerMenuOpen = false }
+
+-- M4 joker choice overlays (Steal/Acrobat/Eye/Angel/Purge) transient UI state:
+-- choiceSel = set of selected row indices (Acrobat picks, Purge picks),
+-- eyeOrder = working reorder of the Eye's peeked pool ids, eyeFrom = pending swap source.
+UI.choiceSel = {}
+UI.eyeOrder = nil
+UI.eyeFrom = nil
 
 -- Button row sits in the strip between the joker row (ends at JOKER_Y+JOKER_H=340)
 -- and the card hand (HAND_Y=380): y=344, h=30 → ends at 374, 6px above the cards.
@@ -269,6 +278,15 @@ local function advanceThreshold()
   -- Joker hand intentionally NOT reset here; jokers carry over between thresholds per the rules.
   GS.playedHands = {}  -- clear the checklist for the new tier
   mergePilesIntoDeck()
+  -- M4: strip timed effects that don't carry across thresholds, and close out
+  -- per-threshold joker state (Peacock, Architect).
+  Effects.clear_tag(S, "no_carry")
+  if S.jokers then
+    S.jokers.peacock_active = nil
+    S.jokers.peacock_extra_pending = nil
+    S.jokers.architect_site = {}
+    S.jokers.architect_active = false
+  end
   drawUpTo(HAND_START)
   UI.overlay = nil
   enterPrepPhase()  -- nextTurn() fires when prep ends
@@ -350,6 +368,21 @@ end
 
 -- === TURN HELPERS ===
 
+-- Shared ctx for joker effects (used by J.use and forwarded to auto-use
+-- triggered jokers like Golden via gain_from_pool).
+local function buildJokerCtx()
+  local ctx
+  ctx = {
+    source         = "key",
+    rng            = love.math,
+    deck           = deck,
+    hand           = hand,
+    playedHands    = GS.playedHands,
+    gain_from_pool = function(n) Jokers.gain_from_pool(S, n, love.math, ctx) end,
+  }
+  return ctx
+end
+
 local function enterEndPhase()
   -- Resolve attack then auto-advance
   if Attacks and Scoring then
@@ -364,11 +397,15 @@ local function enterEndPhase()
     elseif res and res.canceled then
       setStatus("Attack canceled.")
       S.combat.correct_streak = 0
+    elseif res and res.shielded then
+      setStatus("Anti-Joker: attack on "..res.target.." shielded.")
+    elseif res and res.purged then
+      setStatus("Purge: attack on "..res.target.." nullified.")
     elseif res and res.protected then
       -- 3 correct defenses in a row grant 1 joker
       S.combat.correct_streak = (S.combat.correct_streak or 0) + 1
       if S.combat.correct_streak >= 3 then
-        if Jokers then Jokers.gain_from_pool(S, 1, love.math) end
+        if Jokers then Jokers.gain_from_pool(S, 1, love.math, buildJokerCtx()) end
         S.combat.correct_streak = 0
         setStatus("Attack avoided by playing "..res.target..".  Streak bonus: +1 Joker!")
       else
@@ -395,12 +432,22 @@ nextTurn = function()
   GS.phase = "MAIN"
   GS.turn = (GS.turn or 1) + 1
   setStatus("Your turn.")
+  -- Peacock: grant an extra turn every 5 turns while active. Deferred via a
+  -- flag that love.update checks, rather than a recursive nextTurn() call.
+  if S.jokers and S.jokers.peacock_active and GS.turn % 5 == 0 then
+    setStatus("Peacock bonus: extra turn!")
+    S.jokers.peacock_extra_pending = true
+  end
+  -- Cute Joker safety cleanup: the second Three of a Kind only lasts the turn
+  -- the joker was used.
+  if S.jokers then S.jokers.cute_active = nil end
   if Scoring and Scoring.on_turn_advanced then Scoring.on_turn_advanced(S) end
     GS.limits = GS.limits or {}
   GS.limits.discard_used = false
   selected = {}  -- ensure clean state
   selectedJoker = nil
   if Scoring and not S.meta then Scoring.init(S) end
+  Effects.tick(S)
   if Attacks then Attacks.announce(S, love.math) end
   if Jokers then Jokers.start_turn(S) end
 end
@@ -503,8 +550,12 @@ restartGame = function()
   S.meta = nil
   S.jokers = nil
   S.combat = nil
+  S.active_effects = nil
   selectedJoker = nil
   UI.jokerMenuOpen = false
+  UI.choiceSel = {}
+  UI.eyeOrder = nil
+  UI.eyeFrom = nil
   if Scoring then Scoring.init(S) end
   if Jokers then
     Jokers.init(S, love.math)
@@ -552,6 +603,202 @@ local function drawButton(rect)
   love.graphics.rectangle("line", rect.x, rect.y, rect.w, rect.h, 6, 6)
   love.graphics.printf(rect.label, rect.x, rect.y + 6, rect.w, "center")
   love.graphics.setColor(1,1,1)
+end
+
+-- === M4: Joker choice overlays (Steal / Acrobat / Eye / Angel / Purge) ===
+
+-- Which choice overlay (if any) is currently pending. While one is pending all
+-- other mouse/keyboard input is blocked.
+local function pendingChoiceKind()
+  local j = S.jokers
+  if not j then return nil end
+  if j.steal_choice_pending then return "steal" end
+  if j.acrobat_choice_pending then return "acrobat" end
+  if j.eye_choice_pending then return "eye" end
+  if j.angel_choice_pending then return "angel" end
+  if j.purge_pending then return "purge" end
+  return nil
+end
+
+local function resetChoiceUI()
+  UI.choiceSel = {}
+  UI.eyeOrder = nil
+  UI.eyeFrom = nil
+end
+
+-- Returns title, row labels, and whether the overlay has a Confirm button.
+local function buildChoiceRows(kind)
+  local j = S.jokers
+  if kind == "steal" then
+    local rows = {}
+    for i, jid in ipairs((j.steal_pending and j.steal_pending.ids) or {}) do
+      local def = JokerReg.by_id[jid]
+      rows[i] = "Keep " .. ((def and def.name) or tostring(jid))
+    end
+    return "Steal: choose a joker to keep (the other is discarded)", rows, false
+  elseif kind == "acrobat" then
+    local rows = {}
+    for i, c in ipairs((j.acrobat_pending and j.acrobat_pending.cards) or {}) do
+      local r = (c.rank == "T") and "10" or tostring(c.rank)
+      rows[i] = (UI.choiceSel[i] and "[x] " or "[ ] ") .. r .. " " .. c.suit
+    end
+    return "Acrobat: pick up to 4 cards, then Confirm (Esc cancels)", rows, true
+  elseif kind == "eye" then
+    if not UI.eyeOrder then
+      UI.eyeOrder = {}
+      for i, id in ipairs((j.eye_pending and j.eye_pending.ids) or {}) do
+        UI.eyeOrder[i] = id
+      end
+    end
+    local rows = {}
+    for i, jid in ipairs(UI.eyeOrder) do
+      local def = JokerReg.by_id[jid]
+      local mark = (UI.eyeFrom == i) and "→ " or ""
+      rows[i] = mark .. i .. ". " .. ((def and def.name) or tostring(jid))
+    end
+    return "Eye: click two positions to swap, then Confirm (Esc cancels)", rows, true
+  elseif kind == "angel" then
+    local rows = {}
+    for i, jid in ipairs((j.angel_pending and j.angel_pending.ids) or {}) do
+      local def = JokerReg.by_id[jid]
+      rows[i] = "Copy " .. ((def and def.name) or tostring(jid))
+    end
+    return "Angel: choose a joker to copy", rows, false
+  elseif kind == "purge" then
+    local rows = {}
+    for i, name in ipairs(Rules.CATEGORIES) do
+      rows[i] = (UI.choiceSel[i] and "[x] " or "[ ] ") .. name
+    end
+    return "Purge: choose 2 hand types to protect (5 turns)", rows, false
+  end
+  return "", {}, false
+end
+
+local function choicePanelRect(rows)
+  local ww, wh = love.graphics.getDimensions()
+  local pw = 460
+  local ph = 58 + rows * 32 + 50
+  local px = math.floor((ww - pw) / 2)
+  local py = math.floor((wh - ph) / 2)
+  return px, py, pw, ph
+end
+
+local function choiceRowRect(px, py, i)
+  return { x = px + 20, y = py + 48 + (i - 1) * 32, w = 420, h = 28 }
+end
+
+local function choiceConfirmRect(px, py, pw, ph)
+  return { x = px + math.floor(pw / 2) - 60, y = py + ph - 42, w = 120, h = 32 }
+end
+
+local function drawChoiceOverlay(kind)
+  local title, rows, hasConfirm = buildChoiceRows(kind)
+  local ww, wh = love.graphics.getDimensions()
+  love.graphics.setColor(0, 0, 0, 0.6)
+  love.graphics.rectangle("fill", 0, 0, ww, wh)
+  local px, py, pw, ph = choicePanelRect(#rows)
+  love.graphics.setColor(0.12, 0.12, 0.18, 0.97)
+  love.graphics.rectangle("fill", px, py, pw, ph, 10, 10)
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.rectangle("line", px, py, pw, ph, 10, 10)
+  love.graphics.printf(title, px + 16, py + 14, pw - 32, "center")
+  for i, label in ipairs(rows) do
+    local r = choiceRowRect(px, py, i)
+    love.graphics.rectangle("line", r.x, r.y, r.w, r.h, 4, 4)
+    love.graphics.printf(label, r.x, r.y + 5, r.w, "center")
+  end
+  if hasConfirm then
+    local cr = choiceConfirmRect(px, py, pw, ph)
+    love.graphics.rectangle("line", cr.x, cr.y, cr.w, cr.h, 6, 6)
+    love.graphics.printf("Confirm", cr.x, cr.y + 7, cr.w, "center")
+  end
+  love.graphics.setColor(1, 1, 1)
+end
+
+-- Handles a click while a choice overlay is pending. Consumes the click entirely.
+local function choiceOverlayClick(kind, x, y)
+  local _, rows, hasConfirm = buildChoiceRows(kind)
+  local px, py, pw, ph = choicePanelRect(#rows)
+  local hit = nil
+  for i = 1, #rows do
+    if pointInRect(x, y, choiceRowRect(px, py, i)) then hit = i break end
+  end
+  local confirmed = hasConfirm and pointInRect(x, y, choiceConfirmRect(px, py, pw, ph))
+
+  if kind == "steal" then
+    if hit then
+      local res = FX.resolve_steal(S, hit)
+      resetChoiceUI()
+      setStatus((res and res.msg) or "Steal resolved.")
+    end
+  elseif kind == "acrobat" then
+    if hit then
+      if UI.choiceSel[hit] then
+        UI.choiceSel[hit] = nil
+      else
+        local count = 0
+        for _ in pairs(UI.choiceSel) do count = count + 1 end
+        if count < 4 then UI.choiceSel[hit] = true end
+      end
+    elseif confirmed then
+      local chosen = {}
+      for i in pairs(UI.choiceSel) do table.insert(chosen, i) end
+      table.sort(chosen)
+      local res = FX.resolve_acrobat(S, { deck = deck, hand = hand }, chosen)
+      resetChoiceUI()
+      if currentSort == "suit" and Rules.sortHandBySuit then Rules.sortHandBySuit(hand)
+      elseif Rules.sortHandByRank then Rules.sortHandByRank(hand) end
+      setStatus((res and res.msg) or "Acrobat resolved.")
+    end
+  elseif kind == "eye" then
+    if hit then
+      if UI.eyeFrom == nil then
+        UI.eyeFrom = hit
+      else
+        UI.eyeOrder[UI.eyeFrom], UI.eyeOrder[hit] = UI.eyeOrder[hit], UI.eyeOrder[UI.eyeFrom]
+        UI.eyeFrom = nil
+      end
+    elseif confirmed then
+      local res = FX.resolve_eye(S, UI.eyeOrder)
+      resetChoiceUI()
+      setStatus((res and res.msg) or "Eye resolved.")
+    end
+  elseif kind == "angel" then
+    if hit then
+      local res = FX.resolve_angel(S, hit)
+      resetChoiceUI()
+      setStatus((res and res.msg) or "Angel resolved.")
+    end
+  elseif kind == "purge" then
+    if hit then
+      UI.choiceSel[hit] = not UI.choiceSel[hit] or nil
+      local picks = {}
+      for i in pairs(UI.choiceSel) do table.insert(picks, Rules.CATEGORIES[i]) end
+      table.sort(picks)
+      S.jokers.purge_selected = picks
+      if #picks >= 2 then
+        local res = FX.resolve_purge(S)
+        resetChoiceUI()
+        setStatus((res and res.msg) or "Purge resolved.")
+      end
+    end
+  end
+end
+
+-- Escape cancels Acrobat and Eye (nothing was taken yet). Steal, Angel, and
+-- Purge are commitments and cannot be canceled.
+local function choiceOverlayCancel(kind)
+  if kind == "acrobat" then
+    S.jokers.acrobat_pending = nil
+    S.jokers.acrobat_choice_pending = nil
+    resetChoiceUI()
+    setStatus("Acrobat: canceled.")
+  elseif kind == "eye" then
+    S.jokers.eye_pending = nil
+    S.jokers.eye_choice_pending = nil
+    resetChoiceUI()
+    setStatus("Eye: canceled.")
+  end
 end
 
 local function drawCard(card, i)
@@ -602,7 +849,21 @@ local function drawChecklistUI()
   love.graphics.setColor(1,1,1)
   love.graphics.print("Categories (played at least once):", x, y)
   y = y + 20
+  -- M4 Cybernetic: per-hand tint for the current turn's hacked state
+  -- (Double = dim yellow, Protected = dim blue, Lose = dim red).
+  local cyber = Effects.get(S, "cybernetic")
+  local cyber_idx = cyber and math.max(1, math.min(3, cyber.turn_index or 1))
   for _, name in ipairs(Rules.CATEGORIES) do
+    if cyber and cyber.hacks and cyber.hacks[name] then
+      local st = cyber.hacks[name][cyber_idx]
+      local tint = (st == "d" and {0.6, 0.6, 0.1, 0.35})
+                or (st == "p" and {0.2, 0.35, 0.8, 0.35})
+                or (st == "l" and {0.8, 0.15, 0.15, 0.35})
+      if tint then
+        love.graphics.setColor(tint)
+        love.graphics.rectangle("fill", x - 4, y - 2, 220, 22, 4, 4)
+      end
+    end
     local done = GS.playedHands[name]
     local box = done and "[x] " or "[ ] "
     love.graphics.setColor(done and 0.2 or 0, done and 0.6 or 0, done and 0.2 or 0)
@@ -682,11 +943,29 @@ function love.load()
   GS.phase = "TITLE"
 end
 
+function love.update(dt)
+  -- Peacock: a bonus turn scheduled by nextTurn() fires once the current turn
+  -- has settled (avoids recursive nextTurn calls).
+  if S.jokers and S.jokers.peacock_extra_pending then
+    S.jokers.peacock_extra_pending = nil
+    nextTurn()
+    setStatus("Peacock bonus: extra turn!")
+  end
+end
+
 function love.mousepressed(x, y, b)
   if b ~= 1 then return end
 
   if GS.phase == "TITLE" then
     if pointInRect(x, y, BTN_START) then restartGame() end
+    return
+  end
+
+  -- M4: while a joker choice overlay is pending, the click belongs to it
+  -- entirely — never falls through to card/joker selection.
+  local pendingKind = pendingChoiceKind()
+  if pendingKind then
+    choiceOverlayClick(pendingKind, x, y)
     return
   end
 
@@ -797,6 +1076,14 @@ function love.keypressed(key)
     return
   end
 
+  -- M4: block all key actions while a joker choice overlay is pending.
+  -- Escape cancels where it makes sense (Acrobat, Eye).
+  local pendingKind = pendingChoiceKind()
+  if pendingKind then
+    if key == "escape" then choiceOverlayCancel(pendingKind) end
+    return
+  end
+
   if UI and UI.overlay then
     -- Win overlay: Enter defaults to Endless Mode (via confirmOverlay); R restarts.
     -- Loss overlay: Enter or R restarts the run.
@@ -872,7 +1159,7 @@ function love.keypressed(key)
       -- Award score & mark for attack resolution
       local msg = "Played: "..cat.."  |  Drew "..tostring(got)
       if Scoring then
-        local gained = Scoring.apply_award(S, cat)
+        local gained = Scoring.apply_award(S, cat, toPlayed)
         msg = "Played: "..cat.."  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
       end
       setStatus(msg)
@@ -893,6 +1180,10 @@ function love.keypressed(key)
       elseif threshold_done then
         GS.phase = "THRESHOLD"
         UI.overlay = { kind = "threshold", message = "Threshold completed" }
+      elseif S.jokers and S.jokers.cute_active and cat == "Three of a Kind" then
+        -- Cute Joker: stay in MAIN for a second Three of a Kind this turn.
+        S.jokers.cute_active = nil
+        setStatus("Cute Joker: play your second Three of a Kind.")
       else
         enterEndPhase()
       end
@@ -964,21 +1255,58 @@ function love.keypressed(key)
     elseif S.jokers.used_this_turn then
       setStatus("Joker already used this turn.")
     else
-      local ctx = {
-        source         = "key",
-        rng            = love.math,
-        deck           = deck,
-        hand           = hand,
-        playedHands    = GS.playedHands,
-        gain_from_pool = function(n) Jokers.gain_from_pool(S, n, love.math) end,
-      }
-      local res = Jokers.use(S, idx, ctx)
+      local res = Jokers.use(S, idx, buildJokerCtx())
       selectedJoker = nil
       if res and res.msg then
         setStatus(res.msg)
       else
         setStatus("Used joker.")
       end
+    end
+
+  elseif key == "a" then
+    -- Architect: move selected cards from hand onto the building site
+    if GS.phase == "MAIN" and S.jokers and S.jokers.architect_active then
+      local idxs = selectedIndices()
+      if #idxs == 0 then
+        setStatus("Architect: select cards to add to the site.")
+        return
+      end
+      S.jokers.architect_site = S.jokers.architect_site or {}
+      table.sort(idxs, function(a,b) return a>b end)
+      local moved = 0
+      for _, i in ipairs(idxs) do
+        table.insert(S.jokers.architect_site, hand[i])
+        table.remove(hand, i)
+        moved = moved + 1
+      end
+      selected = {}
+      -- draw replacements (same logic as discard/redraw)
+      local need = can_draw(moved)
+      if deck and deck.cards and #deck.cards == 0 then reshuffle_discard_into_deck() end
+      local drawn = deck:drawNoReshuffle(need)
+      for i = 1, #drawn do table.insert(hand, drawn[i]) end
+      if currentSort == "suit" and Rules.sortHandBySuit then Rules.sortHandBySuit(hand)
+      elseif Rules.sortHandByRank then Rules.sortHandByRank(hand) end
+      setStatus("Architect: "..#S.jokers.architect_site.." card(s) on site.")
+    end
+
+  elseif key == "p" then
+    -- Architect: play the building site as a bonus hand (does NOT end the turn)
+    if GS.phase == "MAIN" and S.jokers and S.jokers.architect_active
+       and S.jokers.architect_site and #S.jokers.architect_site >= 1 then
+      local site = S.jokers.architect_site
+      local cat = Eval.exact_category(site)
+      if not cat then
+        setStatus("Architect: site is not a valid hand yet.")
+        return
+      end
+      local gained = Scoring.apply_award(S, cat, site)
+      GS.playedHands[cat] = true
+      if Attacks then Attacks.note_played_this_turn(S, cat) end
+      if deck and deck.commitPlayed then deck:commitPlayed(site) end
+      S.jokers.architect_site = {}
+      setStatus("Architect: played "..cat.." from building site.  +"..tostring(gained).." pts")
     end
 
   elseif key == "c" then
@@ -1086,7 +1414,35 @@ function love.draw()
     end
   end
 
-  
+  -- M4: active-effect labels (right column, under the checklist)
+  local fx_y = 285
+  if S.jokers and S.jokers.architect_active then
+    local site = S.jokers.architect_site or {}
+    local labels = {}
+    for _, c in ipairs(site) do
+      local r = (c.rank == "T") and "10" or tostring(c.rank)
+      table.insert(labels, r..c.suit)
+    end
+    love.graphics.setColor(0.85, 0.85, 0.6)
+    love.graphics.print("🏗 Site: "..(#site > 0 and table.concat(labels, " ") or "(empty)")
+      .."   [A] add selected cards  [P] play site", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+  if Effects.has(S, "attack_shield") then
+    love.graphics.setColor(0.95, 0.75, 0.2)
+    love.graphics.print("🛡 Anti-Joker: attacks shielded", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+  if S.jokers and S.jokers.peacock_active then
+    love.graphics.setColor(0.2, 0.8, 0.75)
+    love.graphics.print("🦚 Peacock: extra turn every 5 turns", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+
+
   -- Hand
   for i, c in ipairs(hand) do
     drawCard(c, i)
@@ -1095,6 +1451,13 @@ function love.draw()
   -- Joker debug menu (on top of everything except the win/threshold overlay)
   if UI.jokerMenuOpen then
     drawJokerMenu()
+  end
+
+  -- M4: joker choice overlay (Steal/Acrobat/Eye/Angel/Purge) — on top of
+  -- everything while a choice is pending.
+  local pendingKind = pendingChoiceKind()
+  if pendingKind then
+    drawChoiceOverlay(pendingKind)
   end
 
   -- Threshold/Win overlay (draw last so it appears above other elements)

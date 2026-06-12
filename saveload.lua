@@ -12,6 +12,14 @@ local function copy_hand(hand)
   return out
 end
 
+-- Deep copy for timed-effect entries (id/turns_remaining/payload/source).
+local function deep_copy(v)
+  if type(v) ~= "table" then return v end
+  local out = {}
+  for k, val in pairs(v) do out[k] = deep_copy(val) end
+  return out
+end
+
 function M.build_state(deck, hand, GS, S, UI)
   local deckState = deck:getState()
   local handCopy = copy_hand(hand)
@@ -40,8 +48,25 @@ function M.build_state(deck, hand, GS, S, UI)
       -- Number of Bicycle temporary cards live this turn (the cards themselves
       -- are restored from the hand, where they carry the `temporary` flag).
       temp_count = #(S.jokers.temp_cards or {}),
+      -- M4 joker state flags
+      flush_active          = S.jokers.flush_active or nil,
+      trader_double         = S.jokers.trader_double or nil,
+      peacock_active        = S.jokers.peacock_active or nil,
+      peacock_extra_pending = S.jokers.peacock_extra_pending or nil,
+      cute_active           = S.jokers.cute_active or nil,
+      architect_active      = S.jokers.architect_active or nil,
+      architect_site        = copy_hand(S.jokers.architect_site or {}),
+      purge_pending         = S.jokers.purge_pending or nil,
+      purge_selected        = deep_copy(S.jokers.purge_selected or nil),
     }
     for i,id in ipairs(S.jokers.hand or {}) do jokerState.hand[i] = id end
+  end
+
+  -- M4: timed effects (effects.lua) — deep copy each entry.
+  local effects
+  if S.active_effects then
+    effects = {}
+    for i, e in ipairs(S.active_effects) do effects[i] = deep_copy(e) end
   end
 
   local scoring
@@ -56,6 +81,7 @@ function M.build_state(deck, hand, GS, S, UI)
     gs     = gs,
     jokers = jokerState,
     scoring = scoring,
+    active_effects = effects,
   }
 end
 
@@ -106,6 +132,19 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
       S.jokers.hand = {}
       for i,id in ipairs(state.jokers.hand or {}) do S.jokers.hand[i] = id end
       S.jokers.used_this_turn = state.jokers.used_this_turn
+      -- M4 joker state flags
+      S.jokers.flush_active          = state.jokers.flush_active or nil
+      S.jokers.trader_double         = state.jokers.trader_double or nil
+      S.jokers.peacock_active        = state.jokers.peacock_active or nil
+      S.jokers.peacock_extra_pending = state.jokers.peacock_extra_pending or nil
+      S.jokers.cute_active           = state.jokers.cute_active or nil
+      S.jokers.architect_active      = state.jokers.architect_active or nil
+      S.jokers.architect_site        = {}
+      for i, c in ipairs(state.jokers.architect_site or {}) do
+        S.jokers.architect_site[i] = { suit = c.suit, rank = c.rank, temporary = c.temporary or nil }
+      end
+      S.jokers.purge_pending  = state.jokers.purge_pending or nil
+      S.jokers.purge_selected = deep_copy(state.jokers.purge_selected or nil)
     end
     -- Rebuild temp_cards as references to the restored hand cards that still
     -- carry the `temporary` flag, so end-of-turn cleanup keeps working.
@@ -113,6 +152,12 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
     for i = 1, #hand do
       if hand[i].temporary then table.insert(S.jokers.temp_cards, hand[i]) end
     end
+  end
+
+  -- M4: restore timed effects.
+  S.active_effects = {}
+  for i, e in ipairs(state.active_effects or {}) do
+    S.active_effects[i] = deep_copy(e)
   end
 
   return hand
