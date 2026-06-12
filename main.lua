@@ -20,7 +20,6 @@ local deck
 local hand = {}          -- make sure 'hand' exists before helpers use it
 local selected = {}
 local selectedJoker = nil
-local lastResult = nil
 local statusMsg = ""
 local font
 
@@ -30,14 +29,13 @@ local currentSort = "rank"
 -- Buttons
 local UI = { overlay = nil }
 
--- NOTE: the .y of these five buttons is recomputed every frame in love.draw()
--- (see BTN_Y = math.max(210, hud_y + 8)); the 210 below is just a safe default
--- so they never collide with the joker row (JOKER_Y=250) before the first draw.
-local BTN_RESTART = {x=40,  y=210, w=100, h=30, label="Restart"}
-local BTN_RANK    = {x=160, y=210, w=110, h=30, label="Sort: Rank"}
-local BTN_SUIT    = {x=280, y=210, w=110, h=30, label="Sort: Suit"}
-local BTN_SAVE   = {x=400, y=210, w=90,  h=30, label="Save"}
-local BTN_LOAD   = {x=500, y=210, w=90,  h=30, label="Load"}
+-- Button row sits in the strip between the joker row (ends at JOKER_Y+JOKER_H=340)
+-- and the card hand (HAND_Y=380): y=344, h=30 → ends at 374, 6px above the cards.
+local BTN_RESTART = {x=40,  y=344, w=100, h=30, label="Restart"}
+local BTN_RANK    = {x=160, y=344, w=110, h=30, label="Sort: Rank"}
+local BTN_SUIT    = {x=280, y=344, w=110, h=30, label="Sort: Suit"}
+local BTN_SAVE   = {x=400, y=344, w=90,  h=30, label="Save"}
+local BTN_LOAD   = {x=500, y=344, w=90,  h=30, label="Load"}
 local BTN_NEXT_T = {x=0, y=0, w=140, h=36, label="Next"}  -- overlay button; positioned relative to panel, untouched
 
 -- SAVE/LOAD
@@ -362,7 +360,6 @@ local function applyLoadedState(state)
   hand = SaveLoad.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
   selected = {}
   selectedJoker = nil
-  lastResult = nil
   setStatus("Loaded game. Phase: "..GS.phase..", Turn "..tostring(GS.turn))
   currentSort = (state.gs and (state.gs.sortPref or state.gs.sortMode)) or currentSort or "rank"
   if currentSort == "suit" and Rules and Rules.sortHandBySuit then
@@ -412,7 +409,6 @@ local function restartGame()
   if Attacks then Attacks.announce(S, love.math) end
   hand = {}
   selected = {}
-  lastResult = nil
   GS:reset()
   setStatus("")
   drawUpTo(HAND_START)
@@ -421,7 +417,7 @@ end
 -- Layout: wrap cards to new rows
 local function handPos(i)
   local ww, _ = love.graphics.getDimensions()
-  local perRow = math.max(1, math.floor((ww - HAND_X*2 + GAP) / (CARD_W + GAP)))
+  local perRow = 10  -- hard cap: cards 1–10 on row 1, 11–20 on row 2, etc.
   local row = math.floor((i-1) / perRow)
   local col = (i-1) % perRow
   local x = HAND_X + col * (CARD_W + GAP)
@@ -622,8 +618,6 @@ function love.keypressed(key)
         setStatus("Invalid selection for a minimal hand.")
         return
       end
-      lastResult = { exact = cat }
-
       -- remove selected from hand
       local toPlayed = {}
       table.sort(idxs, function(a,b) return a>b end)
@@ -828,18 +822,8 @@ function love.draw()
   -- HUD line 6: ~y=170 (Turn / phase — single shared line)
   love.graphics.print("Turn: "..tostring(GS.turn or 1).."   Phase: "..GS.phase, 40, hud_y)
   hud_y = hud_y + 20
-  local lastPlayedY = hud_y + 25
-  -- After the HUD audit, hud_y is final. Anchor the button row below the last HUD
-  -- line, clamped to a minimum of y=210 so it always sits between the HUD and the
-  -- joker row (JOKER_Y=250). Worst-case hud_y≈190 → BTN_Y=210 → buttons span 210–240.
-  local BTN_Y = math.max(210, hud_y + 8)
-  BTN_RESTART.y = BTN_Y
-  BTN_RANK.y    = BTN_Y
-  BTN_SUIT.y    = BTN_Y
-  BTN_SAVE.y    = BTN_Y
-  BTN_LOAD.y    = BTN_Y
 
-  -- Buttons
+  -- Buttons (fixed in the red strip at y=344; see BTN_* definitions above)
   drawButton(BTN_RESTART)
   drawButton(BTN_RANK)
   drawButton(BTN_SUIT)
@@ -860,10 +844,6 @@ function love.draw()
   -- Hand
   for i, c in ipairs(hand) do
     drawCard(c, i)
-  end
-
-  if lastResult and lastResult.exact then
-          love.graphics.print("Last Played: "..lastResult.exact, 40, lastPlayedY)
   end
 
   -- Threshold/Win overlay (draw last so it appears above other elements)
