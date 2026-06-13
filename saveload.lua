@@ -58,6 +58,10 @@ function M.build_state(deck, hand, GS, S, UI)
       architect_site        = copy_hand(S.jokers.architect_site or {}),
       purge_pending         = S.jokers.purge_pending or nil,
       purge_selected        = deep_copy(S.jokers.purge_selected or nil),
+      -- Post-M4 state
+      pool                  = deep_copy(S.jokers.pool or nil),
+      steal_disabled        = deep_copy(S.jokers.steal_disabled or nil),
+      fib_counts            = deep_copy(S.jokers.fib_counts or nil),
     }
     for i,id in ipairs(S.jokers.hand or {}) do jokerState.hand[i] = id end
   end
@@ -145,6 +149,10 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
       end
       S.jokers.purge_pending  = state.jokers.purge_pending or nil
       S.jokers.purge_selected = deep_copy(state.jokers.purge_selected or nil)
+      -- Post-M4 state
+      S.jokers.pool           = deep_copy(state.jokers.pool or nil)
+      S.jokers.steal_disabled = deep_copy(state.jokers.steal_disabled or nil)
+      S.jokers.fib_counts     = deep_copy(state.jokers.fib_counts or nil)
     end
     -- Rebuild temp_cards as references to the restored hand cards that still
     -- carry the `temporary` flag, so end-of-turn cleanup keeps working.

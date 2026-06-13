@@ -131,11 +131,19 @@ local T3 = {
   ["High Card"] = 17, ["Pair"] = 14, ["Two Pair"] = 12, ["Three of a Kind"] = 10,
   ["Flush"] = 16, ["Straight"] = 12, ["Full House"] = 11, ["Four of a Kind"] = 8,
 }
+-- T4/T5 use the same table (locks at T5 for T4+). Included now for completeness;
+-- not yet wired into probs_for_threshold.
+-- TODO: FUTURE — apply T4+ prob tables and rarity spawn changes (F.1). At T4+
+-- probs should lock to this table instead of falling through to T3.
+local T4_T5 = {
+  ["High Card"] = 11, ["Pair"] = 12, ["Two Pair"] = 12, ["Three of a Kind"] = 13,
+  ["Flush"] = 14, ["Straight"] = 13, ["Full House"] = 14, ["Four of a Kind"] = 11,
+}
 
 function M.probs_for_threshold(t)
   if not t or t <= 1 then return T1
   elseif t == 2 then return T2
-  else return T3 end
+  else return T3 end  -- TODO: FUTURE (F.1) — return T4_T5 for t >= 4
 end
 
 return M

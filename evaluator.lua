@@ -94,5 +94,54 @@ function Eval.exact_category(cards)
   return nil
 end
 
+-- Cute Joker (2.4): exactly 6 cards forming two valid, SEPARATE three-of-a-kinds.
+-- Valid only when the 6 cards split into two distinct ranks, each appearing
+-- exactly 3 times. A 6-of-a-kind (all one rank) is explicitly rejected.
+function Eval.is_two_trips(cards)
+  if not cards or #cards ~= 6 then return false end
+  local counts = countsByRank(cards)
+  local trips = 0
+  local distinct = 0
+  for _, cnt in pairs(counts) do
+    distinct = distinct + 1
+    if cnt == 3 then trips = trips + 1 end
+  end
+  -- Two ranks, each exactly three → two separate trips. (Six of a kind would be
+  -- a single rank with count 6, so distinct == 1 and is rejected here.)
+  return distinct == 2 and trips == 2
+end
+
+-- The Architect (2.11): from up to 5 cards, return the HIGHEST valid poker
+-- category present (considering both rank and suit). Unlike exact_category (which
+-- is minimal), this scans best→worst so e.g. a flush beats a contained pair.
+local CATEGORY_RANK = {
+  ["Four of a Kind"]=8, ["Full House"]=7, ["Flush"]=6, ["Straight"]=5,
+  ["Three of a Kind"]=4, ["Two Pair"]=3, ["Pair"]=2, ["High Card"]=1,
+}
+
+function Eval.best_category(cards)
+  if not cards or #cards == 0 or #cards > 5 then return nil end
+  local counts = countsByRank(cards)
+  local pairs_, trips, quads = 0, 0, 0
+  for _, cnt in pairs(counts) do
+    if cnt == 4 then quads = quads + 1
+    elseif cnt == 3 then trips = trips + 1
+    elseif cnt == 2 then pairs_ = pairs_ + 1 end
+  end
+  local best = nil
+  local function consider(cat)
+    if not best or CATEGORY_RANK[cat] > CATEGORY_RANK[best] then best = cat end
+  end
+  if quads >= 1 then consider("Four of a Kind") end
+  if trips >= 1 and pairs_ >= 1 then consider("Full House") end
+  if #cards == 5 and isFlush5(cards) then consider("Flush") end
+  if #cards == 5 and isStraight5(cards) then consider("Straight") end
+  if trips >= 1 then consider("Three of a Kind") end
+  if pairs_ >= 2 then consider("Two Pair") end
+  if pairs_ >= 1 then consider("Pair") end
+  consider("High Card")
+  return best
+end
+
 return Eval
 

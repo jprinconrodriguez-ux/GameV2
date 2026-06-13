@@ -24,13 +24,23 @@ local function shuffle(t)
 end
 
 function Deck.new(numDecks)
+  local cards = makeDecks(numDecks or 2)
   local self = {
-    cards = makeDecks(numDecks or 2),  -- main deck
+    cards = cards,                      -- main deck
     discard = {},                       -- discard pile
-    played = {}                         -- permanent played pile
+    played = {},                        -- permanent played pile
+    -- 3.5.2: total cards that have ever existed in this run (104 for 2 decks).
+    -- Increases whenever cards are permanently added (Food Joker, Bicycle).
+    total_cards = #cards
   }
   shuffle(self.cards)
   return setmetatable(self, { __index = Deck })
+end
+
+-- 3.5.2: register newly created permanent cards so the "Deck: N / T" counter's
+-- total grows when Food Joker / Bicycle add cards to the run.
+function Deck:addPermanentTotal(n)
+  self.total_cards = (self.total_cards or 0) + (n or 0)
 end
 
 -- Draw n cards; reshuffle only when main empty
@@ -93,7 +103,8 @@ function Deck:getState()
   return {
     cards   = copyList(self.cards),
     discard = copyList(self.discard),
-    played  = copyList(self.played)
+    played  = copyList(self.played),
+    total_cards = self.total_cards or (#self.cards + #self.discard + #self.played)
   }
 end
 
@@ -106,6 +117,8 @@ function Deck:loadState(state)
   self.cards   = copyList((state and state.cards)   or {})
   self.discard = copyList((state and state.discard) or {})
   self.played  = copyList((state and state.played)  or {})
+  self.total_cards = (state and state.total_cards)
+                     or (#self.cards + #self.discard + #self.played)
 end
 
 return Deck

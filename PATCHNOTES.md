@@ -1,5 +1,74 @@
 # Jokers' Gambit — Patch Notes
 
+## Post-Milestone 4 Polish
+
+### Global changes
+- **Boss mode / punish level:** No boss-mode code or 30-turn punishment escalation existed in the
+  current source — only a stale comment referencing a "boss system" on the Devil joker, now removed.
+- **Devil Joker (1.2):** Kept in the registry but flagged `hidden=true, active=false`. Excluded from
+  pool construction and never awarded; produces no effect.
+- **Auto Use (1.4):** Fibonacci and Bee were already manually activated (no auto-fire). No auto-use
+  behaviour remained to remove.
+- **HAND_MAX = 14 (1.5):** Base card hand cap is now 14 everywhere via `effectiveHandMax()`.
+
+### Joker fixes
+- **The Eye (2.1):** Fixed the `pool` nil dereference by materializing an infinite pool buffer
+  (`S.jokers.pool`, lazily filled by weighted draws). The overlay shows the next 10 upcoming pool
+  jokers by index; swap-to-reorder writes the new order back to the front of the pool; Esc closes it.
+- **Active-joker HUD (2.2):** Cybernetic, Purge, Galaxy, and Four of Clubs now appear in the
+  active-effects panel (name + remaining turns where applicable), alongside Peacock/Anti-Joker.
+- **Extra-turn counter (2.3):** Peacock's extra turn now shows `Turn: Extra`, announces no attack
+  (`current_attack = nil`), and does not increment the counter (47 → Extra → 48).
+- **Cute Joker (2.4):** Reworked to allow a single 6-card play that must be two separate
+  three-of-a-kinds (a 6-of-a-kind is rejected; any 6-card play without the flag is rejected). Scores
+  Three of a Kind twice.
+- **Acrobat (2.5):** Overlay now toggles between the deck's top 10 and your current hand (H key).
+  Taken cards bypass the cap; regeneration resumes once the hand is at/below the cap.
+- **Angel Joker (2.6):** The copied joker is now always added, even above the joker cap (overflow
+  bypass, same rule as Fibonacci).
+- **Steal (2.7):** Draws 2 from the pool, fully closable (Esc cancels and returns both to the pool +
+  the Steal joker to hand). The non-chosen joker is disabled for the threshold and re-enters the pool
+  at the next threshold.
+- **Purge (2.8):** Shown in the active panel with remaining turns; protected hands are marked with `*`
+  in the checklist.
+- **Food Joker (2.9):** Passive now raises the **card** HAND_MAX by 3 while in hand (immediate on
+  acquire/loss). On use it permanently adds 3 cards to the deck and the cap reverts.
+- **Golden Joker (2.10):** Rarity changed mythic → legendary.
+- **The Architect (2.11):** Building site capped at 5 cards; "play" uses the highest valid poker
+  category among the site cards (`Eval.best_category`); site cleared on threshold advance.
+- **Four of Clubs (2.12):** Real dispatch wired (no more silent "No effect"); scoring bonus unchanged.
+- **Fibonacci (2.13):** Records the marked-hand count at acquisition (shown as a corner badge); on use
+  awards that many jokers (clamped 0–8) with cap bypass.
+
+### Other fixes
+- **Game Over (3.1):** Depletion overlay reworded to a distinct "Game Over" screen with Restart.
+- **Clear selection (3.2):** C clears both cards and the active joker; card/joker selection is now
+  mutually exclusive.
+- **Joker lost (3.3):** A brief "Joker lost: [Name]" notice appears when an earned joker can't fit and
+  isn't cap-bypass eligible.
+- **Invisible (3.4):** Flagged `active=false, deferred=true` with a TODO; never awarded.
+- **HUD (3.5):** Fixed 2×7 card grid; deck counter shows `Deck: N / T` (T tracked via
+  `deck.total_cards`); setup-phase text constrained to the left column; background set to #486478.
+- **Win condition (3.6):** `score >= target` already triggered completion; verified and tested.
+- **Infinite pool (3.7):** Weighted draw uses the canonical spawn chances (29/24/18/13/10/6);
+  hidden/deferred jokers excluded.
+
+### Known issues / awaiting design input
+- Cybernetic Joker rework (2.14): design not provided — implementation preserved with a TODO comment.
+- Four of Clubs rework (2.15): design not provided — dispatch fixed, rework TODO added.
+- The Flush rework (2.16): design not provided — TODO comment added; effect preserved.
+- Endless mode (Step 4): deferred — TODO placeholder near the threshold-advance logic.
+- Invisible Joker (3.4): deferred to a later milestone.
+- T4+ probability/rarity changes (F.1): deferred — TODO comments in attacks.lua and jokers.lua.
+
+### Breaking changes
+- Food Joker now affects the **card** hand cap, not the joker hand cap (the Joker-hand-cap reference
+  in the handoff said +3 to the joker cap; the detailed task 2.9 said +3 to HAND_MAX — implemented per
+  2.9). Save format gained `deck.total_cards` and joker `pool` / `steal_disabled` / `fib_counts`
+  (all optional/back-compatible). Joker hand-cap modifier key renamed `hand_cap_bonus` → `joker_cap_bonus`.
+
+---
+
 ## v3.1 – Deck Depletion, Infinite Joker Pool, Hand Cap & Joker Corrections
 
 ### What's new

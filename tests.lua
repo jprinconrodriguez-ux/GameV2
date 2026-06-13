@@ -162,12 +162,12 @@ do
 end
 print("2.2 Penalty formula: passed")
 
--- ── 2.3: Joker rarity distribution matches draw weights (smoke test) ─────────
+-- ── 3.7: Rarity-weighted draw distribution (10,000 sample, ±3% tolerance) ─────
 do
   local REG = require("joker_registry")
   local S = {}
   Jokers.init(S, love.math)
-  local N = 1000
+  local N = 10000
   local counts = {}
   for _ = 1, N do
     S.jokers.hand = {}  -- keep clear of the hand cap so every draw lands
@@ -177,19 +177,35 @@ do
     assert(def, "Unknown joker id drawn: "..tostring(S.jokers.hand[1]))
     counts[def.rarity] = (counts[def.rarity] or 0) + 1
   end
-  -- Each rarity's observed share must be within ±8 percentage points of its
-  -- expected probability (weight / total weight; weights need not sum to 100).
-  local total_w = 0
-  for _, w in pairs(REG.rarity_weights) do total_w = total_w + w end
+  -- Weights sum to 100, so each weight reads directly as its expected percentage.
   for rarity, weight in pairs(REG.rarity_weights) do
-    local expected_pct = (weight / total_w) * 100
     local share = ((counts[rarity] or 0) / N) * 100
-    assert(math.abs(share - expected_pct) <= 8,
-      string.format("Rarity %s share %.1f%% deviates more than 8pp from expected %.1f%%",
-        rarity, share, expected_pct))
+    assert(math.abs(share - weight) <= 3,
+      string.format("Rarity %s share %.1f%% deviates more than 3pp from expected %d%%",
+        rarity, share, weight))
   end
 end
-print("2.3 Joker rarity distribution: passed")
+print("3.7 Rarity-weighted draw distribution: passed")
+
+-- ── 1.2/3.4/3.7: hidden/inactive/deferred jokers are never drawn ─────────────
+do
+  local REG = require("joker_registry")
+  local S = {}
+  Jokers.init(S, love.math)
+  for _ = 1, 5000 do
+    S.jokers.hand = {}
+    local jid = Jokers.gain_joker(S, love.math)
+    assert(jid ~= "devil" and jid ~= "invisible",
+      "hidden/deferred joker must never be drawn, got "..tostring(jid))
+  end
+  -- ids_by_rarity must also exclude them.
+  for _, ids in pairs(REG.ids_by_rarity()) do
+    for _, id in ipairs(ids) do
+      assert(id ~= "devil" and id ~= "invisible", "excluded joker leaked into ids_by_rarity: "..id)
+    end
+  end
+end
+print("Hidden joker exclusion test: passed")
 
 -- ── 7. Save/Load round trip ───────────────────────────────────────────────────
 do
@@ -434,16 +450,25 @@ do
 end
 print("Joker pool probability test: passed")
 
--- ── v3.1 Area 3: Food Joker passive grants +3 hand cap ───────────────────────
+-- ── 2.9: Food Joker passive raises the CARD hand cap (HAND_MAX) by 3 ──────────
 do
   local S = {}
   Jokers.init(S, love.math)
+  -- Without Food in hand the effective card cap equals the base (14).
+  assert(Jokers.card_hand_max(S, 14) == 14,
+    "no Food → card cap should equal base 14, got "..tostring(Jokers.card_hand_max(S, 14)))
   S.jokers.hand = { "food" }   -- Food Joker passive in hand
-  Jokers.start_turn(S)         -- refreshes passives
-  assert(S.jokers.modifiers.hand_cap_bonus == 3,
-    "Food Joker should grant +3 hand cap bonus, got "..tostring(S.jokers.modifiers.hand_cap_bonus))
+  -- Immediate on acquire (no start_turn needed): +3 to the card cap.
+  assert(Jokers.card_hand_max(S, 14) == 17,
+    "Food in hand → card cap 14+3=17, got "..tostring(Jokers.card_hand_max(S, 14)))
+  Jokers.start_turn(S)         -- refreshes passives → records the bonus too
+  assert(S.jokers.modifiers.card_cap_bonus == 3,
+    "Food Joker should record +3 card cap bonus, got "..tostring(S.jokers.modifiers.card_cap_bonus))
+  -- Reverts immediately when Food leaves the hand.
+  S.jokers.hand = {}
+  assert(Jokers.card_hand_max(S, 14) == 14, "card cap should revert to base when Food is gone")
 end
-print("Food Joker hand cap test: passed")
+print("Food Joker card cap test: passed")
 
 -- ── v3.1 Area 4: Skull halves the current attack's penalty ───────────────────
 do
@@ -544,11 +569,11 @@ do
   assert(r.ok, "resolve_angel should succeed")
   assert(#S.jokers.hand == 3 and S.jokers.hand[3] == "skull", "copy should land in hand")
   assert(not S.jokers.angel_choice_pending, "angel pending flag should clear")
-  -- At the cap, the copy is dropped.
+  -- 2.6: at the cap, the copy is STILL added (cap bypass, same rule as Fibonacci).
   S.jokers.hand = { "bicycle", "bicycle", "bicycle", "bicycle", "bicycle" }
   FX.angel(S, {})
   FX.resolve_angel(S, 1)
-  assert(#S.jokers.hand == 5, "angel must not grow the hand past the cap")
+  assert(#S.jokers.hand == 6, "angel must add the copy even past the cap (overflow bypass)")
 end
 print("M4 resolve_angel: passed")
 
@@ -843,5 +868,115 @@ do
   assert(JReg.by_id["golden"].jtype == "triggered", "golden must be a triggered joker")
 end
 print("M4 registry sanity: passed")
+
+-- ═══════════════════════ POST-M4 POLISH TESTS ═══════════════════════
+
+-- ── 3.6: is_threshold_complete returns true when score == target ─────────────
+do
+  local S = {}
+  Scoring.init(S)
+  S.meta.threshold = 1
+  S.meta.score = 80   -- exactly the T1 target
+  assert(Scoring.is_threshold_complete(S) == true, "score == target should complete (T1=80)")
+  S.meta.score = 79
+  assert(Scoring.is_threshold_complete(S) == false, "score below target must not complete")
+  S.meta.threshold = 3
+  S.meta.score = 300  -- exactly the T3 target
+  assert(Scoring.is_threshold_complete(S) == true, "score == target should complete (T3=300)")
+end
+print("3.6 equal-to-target completion: passed")
+
+-- ── 2.13: Fibonacci awards jokers equal to marked hands at acquisition time ───
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  -- Acquisition-time count is supplied via ctx.fib_count and overrides the live
+  -- checklist; awards bypass the joker cap (overflow allowed).
+  local gained = 0
+  local ctx = {
+    rng = love.math,
+    fib_count = 5,
+    playedHands = { ["Pair"] = true },  -- live checklist (should be ignored)
+    gain_from_pool = function(n) gained = gained + n end,
+  }
+  local r = FX.fibonacci(S, ctx)
+  assert(r.ok and gained == 5, "fibonacci should award the acquisition-time count (5), got "..gained)
+  -- Clamp to a maximum of 8.
+  gained = 0; ctx.fib_count = 12
+  FX.fibonacci(S, ctx)
+  assert(gained == 8, "fibonacci award must clamp to max 8, got "..gained)
+  -- Recording at acquisition: gaining a Fibonacci stores the current marked count.
+  local S2 = {}
+  Jokers.init(S2, love.math)
+  S2.jokers.pool = { "fibonacci" }  -- force the next pool draw to be Fibonacci
+  Jokers.gain_joker(S2, love.math, { playedHands = { ["Pair"]=true, ["Flush"]=true } })
+  assert(S2.jokers.fib_counts and S2.jokers.fib_counts[1] == 2,
+    "acquiring Fibonacci should record the marked-hand count (2)")
+end
+print("2.13 fibonacci acquisition count: passed")
+
+-- ── 2.4: Cute Joker 6-card play = two three-of-a-kinds; 6-of-a-kind rejected ──
+do
+  local two_trips = {
+    {suit="♠",rank="9"},{suit="♥",rank="9"},{suit="♦",rank="9"},
+    {suit="♠",rank="4"},{suit="♥",rank="4"},{suit="♦",rank="4"},
+  }
+  local six_kind = {
+    {suit="♠",rank="9"},{suit="♥",rank="9"},{suit="♦",rank="9"},
+    {suit="♣",rank="9"},{suit="♠",rank="9"},{suit="♥",rank="9"},
+  }
+  local trip_plus_pair = {
+    {suit="♠",rank="9"},{suit="♥",rank="9"},{suit="♦",rank="9"},
+    {suit="♠",rank="4"},{suit="♥",rank="4"},{suit="♦",rank="2"},
+  }
+  assert(Eval.is_two_trips(two_trips) == true, "two separate trips must be accepted")
+  assert(Eval.is_two_trips(six_kind) == false, "six-of-a-kind must be rejected")
+  assert(Eval.is_two_trips(trip_plus_pair) == false, "trips + pair is not two trips")
+  -- exact_category still rejects any 6-card hand (the flag gate lives in main.lua).
+  assert(Eval.exact_category(two_trips) == nil, "exact_category must reject 6-card hands")
+end
+print("2.4 cute two-trips evaluator: passed")
+
+-- ── 2.11: Architect best_category picks the highest valid hand among ≤5 cards ─
+do
+  local flush5 = {
+    {suit="♠",rank="2"},{suit="♠",rank="9"},{suit="♠",rank="4"},
+    {suit="♠",rank="K"},{suit="♠",rank="7"},
+  }
+  assert(Eval.best_category(flush5) == "Flush", "five same-suit cards → Flush")
+  local pair_in_5 = {
+    {suit="♠",rank="9"},{suit="♥",rank="9"},{suit="♦",rank="2"},
+    {suit="♣",rank="5"},{suit="♠",rank="K"},
+  }
+  assert(Eval.best_category(pair_in_5) == "Pair", "a contained pair → Pair (best)")
+  local full_house = {
+    {suit="♠",rank="9"},{suit="♥",rank="9"},{suit="♦",rank="9"},
+    {suit="♣",rank="5"},{suit="♠",rank="5"},
+  }
+  assert(Eval.best_category(full_house) == "Full House", "trips+pair → Full House")
+end
+print("2.11 architect best_category: passed")
+
+-- ── 2.7: Steal disables the non-chosen joker (re-enters pool next threshold) ──
+do
+  local S = {}
+  Jokers.init(S, love.math)
+  S.jokers.pool = { "bicycle", "skull", "steal" }
+  FX.steal(S, { rng = love.math })
+  local ids = S.jokers.steal_pending.ids
+  FX.resolve_steal(S, 1)  -- keep ids[1]; ids[2] becomes disabled
+  assert(S.jokers.steal_disabled and #S.jokers.steal_disabled == 1,
+    "non-chosen joker should be queued as disabled")
+  assert(S.jokers.steal_disabled[1] == ids[2], "the disabled joker must be the non-chosen one")
+  -- Cancel path returns both revealed jokers to the pool.
+  local S2 = {}
+  Jokers.init(S2, love.math)
+  S2.jokers.pool = { "bicycle", "skull", "steal" }
+  FX.steal(S2, { rng = love.math })
+  FX.cancel_steal(S2)
+  assert(#S2.jokers.pool == 3, "cancel_steal should return both jokers to the pool")
+  assert(not S2.jokers.steal_choice_pending, "cancel_steal should clear the pending flag")
+end
+print("2.7 steal disable/cancel: passed")
 
 print("\nAll tests passed.")

@@ -50,14 +50,17 @@ function E.skull(state, ctx)
 end
 E.cancel_attack = E.skull  -- backward-compatible alias
 
--- Food Joker (Legendary, Passive) — Joker Index: hand cap +3 while in hand.
--- Applied each turn by J.start_turn (modifiers are recomputed from scratch).
-function E.hand_cap_plus3(state, ctx)
+-- Food Joker (Legendary, Passive) — Post-M4 (2.9): while in hand the CARD hand
+-- cap (HAND_MAX) is +3. The live value is computed by J.card_hand_max from hand
+-- contents (immediate on acquire/loss); this passive refresh just records the
+-- bonus in modifiers for any reader that wants it. On *use* the joker adds 3
+-- permanent cards to the deck and the bonus is gone (handled in main.lua).
+function E.food_passive(state, ctx)
   state.jokers.modifiers = state.jokers.modifiers or {}
-  state.jokers.modifiers.hand_cap_bonus = (state.jokers.modifiers.hand_cap_bonus or 0) + 3
+  state.jokers.modifiers.card_cap_bonus = 3
   return { ok = true }
 end
-E.food_passive = E.hand_cap_plus3  -- backward-compatible alias
+E.hand_cap_plus3 = E.food_passive  -- backward-compatible alias
 
 -- Rarity ordering (least rare → most rare). Used by Bee to pick a discard.
 local RARITY_ORDER = {
@@ -84,9 +87,13 @@ local function hand_cap(state)
 end
 
 -- ── Steal (Rare) ─────────────────────────────────────────────────────────────
--- TODO(main.lua): handle steal_choice_pending UI (call E.resolve_steal on pick).
--- Reveal 2 jokers from the pool. Player keeps 1; the other is permanently removed.
+-- 2.7: Draw 2 jokers from the pool. Player keeps 1 (to hand); the other is
+-- disabled for the current threshold (re-enters the pool at the next threshold,
+-- via main.lua advanceThreshold). The overlay is fully closable; closing without
+-- a pick cancels the use (handled by E.cancel_steal in main.lua).
 function E.steal(state, ctx)
+  local J = require("jokers")
+  J.ensure_pool(state, ctx and ctx.rng, 2)
   local pool = state.jokers.pool or {}
   local revealed = {}
   for _=1,2 do
@@ -98,7 +105,9 @@ function E.steal(state, ctx)
   return { ok=true, msg="Steal: choose a joker to keep.", pending=true }
 end
 
--- Resolve a Steal selection: keep ids[chosen_index] (to hand), discard the other.
+-- Resolve a Steal selection: keep ids[chosen_index] (to hand); the other is
+-- disabled until the next threshold (queued in steal_disabled, re-added to the
+-- pool on threshold advance).
 function E.resolve_steal(state, chosen_index)
   local pending = state.jokers.steal_pending
   if not pending then return { ok=false, msg="Steal: nothing pending." } end
@@ -106,10 +115,26 @@ function E.resolve_steal(state, chosen_index)
   if kept then
     table.insert(state.jokers.hand, kept)
   end
-  -- The non-chosen ids are discarded permanently.
+  state.jokers.steal_disabled = state.jokers.steal_disabled or {}
+  for i, id in ipairs(pending.ids) do
+    if i ~= chosen_index then table.insert(state.jokers.steal_disabled, id) end
+  end
   state.jokers.steal_pending = nil
   state.jokers.steal_choice_pending = nil
   return { ok=true, msg="Steal: kept a joker." }
+end
+
+-- Cancel a Steal without choosing: both revealed jokers return to the pool.
+-- main.lua additionally restores the Steal joker to hand and clears used_this_turn.
+function E.cancel_steal(state)
+  local pending = state.jokers.steal_pending
+  if pending then
+    state.jokers.pool = state.jokers.pool or {}
+    for _, id in ipairs(pending.ids) do table.insert(state.jokers.pool, id) end
+  end
+  state.jokers.steal_pending = nil
+  state.jokers.steal_choice_pending = nil
+  return { ok=true, msg="Steal: cancelled." }
 end
 
 -- ── The Acrobat (Legendary) ──────────────────────────────────────────────────
@@ -168,6 +193,10 @@ end
 -- TODO(main.lua): handle eye_choice_pending UI (call E.resolve_eye on confirm).
 -- Look at the next 10 jokers in the pool and rearrange them in any order.
 function E.eye(state, ctx)
+  -- 2.1: materialize the infinite pool so there are real upcoming jokers to show
+  -- (this is the fix for the `pool` nil dereference). Show the next 10 by index.
+  local J = require("jokers")
+  J.ensure_pool(state, ctx and ctx.rng, 10)
   local pool = state.jokers.pool or {}
   local n = #pool
   local ids = {}
@@ -186,7 +215,7 @@ end
 function E.resolve_eye(state, new_order)
   local pending = state.jokers.eye_pending
   if not pending then return { ok=false, msg="Eye: nothing pending." } end
-  local pool = state.jokers.pool
+  local pool = state.jokers.pool or {}  -- 2.1: never dereference a nil pool
   local n = #pool
   -- ids[1] corresponds to pool[n], ids[2] to pool[n-1], ... down to start_index.
   for k, id in ipairs(new_order or {}) do
@@ -222,16 +251,24 @@ function E.bee(state, ctx)
   return { ok=true, msg="Bee: discarded "..tostring(name)..", drew 2 jokers." }
 end
 
--- ── Fibonacci (Mythic) ───────────────────────────────────────────────────────
--- Gain 1 joker from the pool for each category already marked on the checklist.
+-- ── Fibonacci (Mythic) — reworked (2.13) ─────────────────────────────────────
+-- No Auto Use (1.4): manually activated. The number of jokers it awards is the
+-- count of hands that were already marked on the checklist *at the moment the
+-- Fibonacci was acquired* (shown as a badge on the card). On use it awards that
+-- many jokers from the pool (clamped 0..8). Awards bypass the joker hand cap
+-- (overflow held but not regenerated until the hand drops to ≤ 5).
 function E.fibonacci(state, ctx)
-  local count = 0
-  if ctx and ctx.playedHands then
+  -- Acquisition-time count comes from ctx.fib_count (set by main.lua). Fall back
+  -- to the live checklist count if it was not supplied.
+  local count = ctx and ctx.fib_count
+  if count == nil and ctx and ctx.playedHands then
+    count = 0
     for _, v in pairs(ctx.playedHands) do
       if v then count = count + 1 end
     end
   end
-  if ctx and ctx.gain_from_pool then ctx.gain_from_pool(count) end
+  count = math.max(0, math.min(8, count or 0))
+  if ctx and ctx.gain_from_pool then ctx.gain_from_pool(count, { allow_overflow = true }) end
   return { ok=true, msg="Fibonacci: gained "..count.." jokers." }
 end
 
@@ -250,13 +287,14 @@ function E.angel(state, ctx)
   return { ok=true, msg="Angel: choose a joker to copy.", pending=true }
 end
 
--- Resolve an Angel copy: duplicate the chosen joker into hand (respecting the
--- hand cap — overflow copies are dropped).
+-- Resolve an Angel copy (2.6): duplicate the chosen joker into hand. The copy is
+-- added even when the hand is at cap (cap bypass, same rule as Fibonacci — the
+-- overflow copy is held but will not regenerate until the hand drops to ≤ 5).
 function E.resolve_angel(state, chosen_index)
   local pending = state.jokers.angel_pending
   if not pending then return { ok=false, msg="Angel: nothing pending." } end
   local id = pending.ids[chosen_index]
-  if id and #state.jokers.hand < hand_cap(state) then
+  if id then
     table.insert(state.jokers.hand, id)
   end
   state.jokers.angel_pending = nil
@@ -297,6 +335,8 @@ end
 -- of 4 states: Normal 35% ("n"), Double 20% ("d"), Protected 30% ("p"),
 -- Lose 15% ("l"). Cannot carry across thresholds.
 function E.cybernetic(state, ctx)
+  -- TODO: CYBERNETIC REWORK — awaiting design spec (2.14). Current implementation
+  -- preserved as-is; it is safe to use (no crashes, no corrupted state).
   local Effects = require("effects")
   local Rules = require("rules")
   local rng = ctx and ctx.rng
@@ -324,6 +364,8 @@ end
 -- The next Flush played scores double, but only if the current attacking hand
 -- is also a Flush. Consumed (flag cleared) by scoring.lua when a Flush is played.
 function E.flush_joker(state, ctx)
+  -- TODO: THE FLUSH REWORK — awaiting design spec (2.16). Current implementation
+  -- preserved as-is and is safe to use.
   state.jokers.flush_active = true
   return { ok=true, msg="The Flush: next Flush played scores double if it blocks the attack." }
 end
@@ -389,12 +431,23 @@ function E.peacock(state, ctx)
   return { ok=true, msg="Peacock: extra turn every 5 turns this threshold." }
 end
 
--- ── Cute Joker (Epic) ────────────────────────────────────────────────────────
--- Allows playing a second Three of a Kind in the turn it was used. The play
--- flow in main.lua consumes the flag; nextTurn clears it as a safety net.
+-- ── Four of Clubs (Mythic, triggered) — dispatch fix (2.12) ──────────────────
+-- TODO: FOUR OF CLUBS REWORK — awaiting design spec (2.15). For now the *use*
+-- path must not silently no-op (the old "No effect" bug). The scoring bonus
+-- (hands containing a Club or a 4 score extra) is applied in scoring.lua while
+-- the joker is in hand; using it simply confirms the passive is active. The
+-- rework should land HERE.
+function E.fourofclubs(state, ctx)
+  return { ok=true, msg="Four of Clubs: passive active — Club/4 hands score extra." }
+end
+
+-- ── Cute Joker (Epic) — reworked (2.4) ───────────────────────────────────────
+-- Sets a flag that lets the play handler in main.lua accept exactly 6 cards when
+-- they form two valid, separate three-of-a-kinds (a 6-of-a-kind is rejected).
+-- The play flow consumes the flag; nextTurn clears it as a safety net.
 function E.cute_joker(state, ctx)
   state.jokers.cute_active = true
-  return { ok=true, msg="Cute Joker: you may play a second Three of a Kind this turn." }
+  return { ok=true, msg="Cute Joker: play 6 cards as two three-of-a-kinds this turn." }
 end
 
 -- ── The Architect (Legendary) ────────────────────────────────────────────────

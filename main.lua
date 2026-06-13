@@ -14,7 +14,9 @@ local FX = require("joker_effects")
 -- === CONSTANTS (safe defaults) ===
 local HAND_START = HAND_START or 7    -- starting hand size
 -- Card hand cap (max cards held). Separate from the joker hand cap (max 5, in jokers.lua).
-local HAND_MAX   = HAND_MAX   or 15   -- absolute cap
+-- 1.5: HAND_MAX is 14. Food Joker (2.9) raises the effective cap by +3 while in
+-- hand — use effectiveHandMax() everywhere instead of HAND_MAX directly.
+local HAND_MAX   = HAND_MAX   or 14   -- absolute base cap
 local NUM_DECKS  = NUM_DECKS  or 2    -- SP default; MP later = players + 1
 
 -- === STATE ===
@@ -100,6 +102,11 @@ local function setStatus(s) statusMsg = s or "" end
 
 local S = {}
 
+-- Effective card hand cap = HAND_MAX (+3 while Food Joker is in hand, 2.9).
+local function effectiveHandMax()
+  return Jokers.card_hand_max(S, HAND_MAX)
+end
+
 -- Forward declarations
 local nextTurn
 local restartGame
@@ -127,10 +134,13 @@ end
 -- Losing mechanic (v3.1): the run ends in a loss if the main deck is fully
 -- depleted with nothing left to reshuffle AND the player has not yet met the
 -- score target AND played every hand category at least once.
+-- 3.1: Game Over — deck, discard, and (locked) played pile are exhausted with
+-- no cards left to draw into hand and the threshold target unmet. Distinct from
+-- the win/threshold overlay; offers a Restart button.
 local function triggerLoss()
   GS.phase = "LOSS"
-  setStatus("Deck depleted — run over.")
-  UI.overlay = { kind = "loss", message = "Deck Depleted!\nYou ran out of cards." }
+  setStatus("Game Over — no cards left to draw.")
+  UI.overlay = { kind = "loss", message = "Game Over\nNo cards left to draw and the target was not reached." }
 end
 
 -- Call after a draw could not be satisfied. If both the main deck and the
@@ -146,7 +156,7 @@ local function maybeTriggerDepletion()
 end
 
 local function can_draw(n)
-  local hand_max = HAND_MAX or 15
+  local hand_max = effectiveHandMax()
   local free = hand_max - getHandSize()
   if free < 0 then free = 0 end
   if n == nil or n < 0 then n = 0 end
@@ -154,7 +164,7 @@ local function can_draw(n)
 end
 
 local function drawN(n)
-  local effective_max = HAND_MAX or 15
+  local effective_max = effectiveHandMax()
   local drawnCount = 0
   if deck and deck.cards and #deck.cards == 0 then reshuffle_discard_into_deck() end
   for _ = 1, (n or 0) do
@@ -194,7 +204,7 @@ S.addTempCards = function(cards)
 end
 
 local function drawUpTo(target)
-  local effective_max = HAND_MAX or 15
+  local effective_max = effectiveHandMax()
   target = math.min(target or HAND_START, effective_max)
   local total = 0
   while getHandSize() < target do
@@ -263,6 +273,7 @@ local function mergePilesIntoDeck()
   end
 end
 
+-- TODO: ENDLESS MODE REWORK — scope to be defined in a separate session (Step 4).
 local function advanceThreshold()
   if not S.meta then return end
   local cur = S.meta.threshold or 1
@@ -284,8 +295,16 @@ local function advanceThreshold()
   if S.jokers then
     S.jokers.peacock_active = nil
     S.jokers.peacock_extra_pending = nil
-    S.jokers.architect_site = {}
+    S.jokers.architect_site = {}      -- 2.11: building site does not carry over
     S.jokers.architect_active = false
+    -- 2.7: jokers disabled by Steal re-enter the pool at the next threshold.
+    if S.jokers.steal_disabled and #S.jokers.steal_disabled > 0 then
+      S.jokers.pool = S.jokers.pool or {}
+      for _, id in ipairs(S.jokers.steal_disabled) do
+        table.insert(S.jokers.pool, id)
+      end
+      S.jokers.steal_disabled = {}
+    end
   end
   drawUpTo(HAND_START)
   UI.overlay = nil
@@ -337,6 +356,20 @@ local function jokerPos(i)
   return x, y
 end
 
+-- 2.13: ordinal of the k-th Fibonacci in hand → its stored acquisition count,
+-- shown as a small badge. Returns nil for non-Fibonacci jokers.
+local function fibBadgeFor(handIndex)
+  if not (S.jokers and S.jokers.hand and S.jokers.hand[handIndex] == "fibonacci") then
+    return nil
+  end
+  local ordinal = 0
+  for i = 1, handIndex do
+    if S.jokers.hand[i] == "fibonacci" then ordinal = ordinal + 1 end
+  end
+  local counts = S.jokers.fib_counts or {}
+  return counts[ordinal]
+end
+
 local function drawJoker(jid, i)
   local x, y = jokerPos(i)
   local def = JokerReg.by_id[jid]
@@ -346,6 +379,15 @@ local function drawJoker(jid, i)
   love.graphics.rectangle("line", x, y, JOKER_W, JOKER_H, 8, 8)
   local label = def and def.name or tostring(jid)
   love.graphics.printf(label, x+4, y + JOKER_H/2 - 8, JOKER_W-8, "center")
+  -- 2.13: Fibonacci acquisition-count badge in the top-right corner.
+  local badge = fibBadgeFor(i)
+  if badge ~= nil then
+    love.graphics.setColor(0.95, 0.85, 0.2)
+    love.graphics.rectangle("fill", x + JOKER_W - 18, y + 2, 16, 16, 3, 3)
+    love.graphics.setColor(0, 0, 0)
+    love.graphics.printf(tostring(badge), x + JOKER_W - 18, y + 3, 16, "center")
+    love.graphics.setColor(1, 1, 1)
+  end
   if selectedJoker == i then
     love.graphics.setColor(1, 0.9, 0.3, 0.35)
     love.graphics.rectangle("fill", x, y, JOKER_W, JOKER_H, 8, 8)
@@ -378,7 +420,7 @@ local function buildJokerCtx()
     deck           = deck,
     hand           = hand,
     playedHands    = GS.playedHands,
-    gain_from_pool = function(n) Jokers.gain_from_pool(S, n, love.math, ctx) end,
+    gain_from_pool = function(n, opts) Jokers.gain_from_pool(S, n, love.math, ctx, opts) end,
   }
   return ctx
 end
@@ -427,18 +469,25 @@ local function cleanupTempCards()
   S.jokers.temp_cards = {}
 end
 
-nextTurn = function()
+-- 2.3: extra-turn support. An extra turn (Peacock) does NOT advance the turn
+-- counter — it shows "Extra" instead — and announces no attack. The main counter
+-- resumes from where it left off on the following normal turn.
+nextTurn = function(isExtra)
   cleanupTempCards()
   GS.phase = "MAIN"
-  GS.turn = (GS.turn or 1) + 1
-  setStatus("Your turn.")
-  -- Peacock: grant an extra turn every 5 turns while active. Deferred via a
-  -- flag that love.update checks, rather than a recursive nextTurn() call.
-  if S.jokers and S.jokers.peacock_active and GS.turn % 5 == 0 then
-    setStatus("Peacock bonus: extra turn!")
+  if isExtra then
+    GS.extra_turn = true
+  else
+    GS.extra_turn = false
+    GS.turn = (GS.turn or 1) + 1
+  end
+  setStatus(isExtra and "Peacock bonus: extra turn!" or "Your turn.")
+  -- Peacock: grant an extra turn every 5 turns while active (never on an extra
+  -- turn itself, to avoid chaining). Deferred via a flag that love.update checks.
+  if not isExtra and S.jokers and S.jokers.peacock_active and GS.turn % 5 == 0 then
     S.jokers.peacock_extra_pending = true
   end
-  -- Cute Joker safety cleanup: the second Three of a Kind only lasts the turn
+  -- Cute Joker safety cleanup: the 6-card two-trips play only lasts the turn
   -- the joker was used.
   if S.jokers then S.jokers.cute_active = nil end
   if Scoring and Scoring.on_turn_advanced then Scoring.on_turn_advanced(S) end
@@ -448,7 +497,13 @@ nextTurn = function()
   selectedJoker = nil
   if Scoring and not S.meta then Scoring.init(S) end
   Effects.tick(S)
-  if Attacks then Attacks.announce(S, love.math) end
+  -- 2.3: no attack is announced on an extra turn — current_attack stays nil.
+  if isExtra then
+    S.combat = S.combat or {}
+    S.combat.current_attack = nil
+  elseif Attacks then
+    Attacks.announce(S, love.math)
+  end
   if Jokers then Jokers.start_turn(S) end
 end
 
@@ -571,10 +626,9 @@ restartGame = function()
   drawUpTo(HAND_START)
 end
 
--- Layout: wrap cards to new rows
+-- 3.5.1: fixed 2×7 grid (14 cards max). Cards fill left-to-right, top row first.
 local function handPos(i)
-  local ww, _ = love.graphics.getDimensions()
-  local perRow = 10  -- hard cap: cards 1–10 on row 1, 11–20 on row 2, etc.
+  local perRow = 7  -- row 1: cards 1–7, row 2: cards 8–14
   local row = math.floor((i-1) / perRow)
   local col = (i-1) % perRow
   local x = HAND_X + col * (CARD_W + GAP)
@@ -624,6 +678,7 @@ local function resetChoiceUI()
   UI.choiceSel = {}
   UI.eyeOrder = nil
   UI.eyeFrom = nil
+  UI.acrobatViewHand = nil
 end
 
 -- Returns title, row labels, and whether the overlay has a Confirm button.
@@ -635,14 +690,24 @@ local function buildChoiceRows(kind)
       local def = JokerReg.by_id[jid]
       rows[i] = "Keep " .. ((def and def.name) or tostring(jid))
     end
-    return "Steal: choose a joker to keep (the other is discarded)", rows, false
+    return "Steal: choose a joker to keep — the other is disabled this threshold (Esc cancels)", rows, false
   elseif kind == "acrobat" then
+    -- 2.5: H toggles between the deck's top 10 (pickable) and your current hand
+    -- (read-only) so you can make an informed choice before confirming.
+    if UI.acrobatViewHand then
+      local rows = {}
+      for i, c in ipairs(hand) do
+        local r = (c.rank == "T") and "10" or tostring(c.rank)
+        rows[i] = r .. " " .. c.suit
+      end
+      return "Acrobat — your hand (H: back to deck, Esc cancels)", rows, true
+    end
     local rows = {}
     for i, c in ipairs((j.acrobat_pending and j.acrobat_pending.cards) or {}) do
       local r = (c.rank == "T") and "10" or tostring(c.rank)
       rows[i] = (UI.choiceSel[i] and "[x] " or "[ ] ") .. r .. " " .. c.suit
     end
-    return "Acrobat: pick up to 4 cards, then Confirm (Esc cancels)", rows, true
+    return "Acrobat: pick up to 4 cards (H: view hand, Esc cancels), then Confirm", rows, true
   elseif kind == "eye" then
     if not UI.eyeOrder then
       UI.eyeOrder = {}
@@ -728,10 +793,25 @@ local function choiceOverlayClick(kind, x, y)
   if kind == "steal" then
     if hit then
       local res = FX.resolve_steal(S, hit)
+      UI.pendingChoiceJoker = nil
       resetChoiceUI()
       setStatus((res and res.msg) or "Steal resolved.")
     end
   elseif kind == "acrobat" then
+    if UI.acrobatViewHand then
+      -- Read-only hand view: only Confirm acts; row clicks are ignored.
+      if confirmed then
+        local chosen = {}
+        for i in pairs(UI.choiceSel) do table.insert(chosen, i) end
+        table.sort(chosen)
+        local res = FX.resolve_acrobat(S, { deck = deck, hand = hand }, chosen)
+        resetChoiceUI()
+        if currentSort == "suit" and Rules.sortHandBySuit then Rules.sortHandBySuit(hand)
+        elseif Rules.sortHandByRank then Rules.sortHandByRank(hand) end
+        setStatus((res and res.msg) or "Acrobat resolved.")
+      end
+      return
+    end
     if hit then
       if UI.choiceSel[hit] then
         UI.choiceSel[hit] = nil
@@ -785,8 +865,8 @@ local function choiceOverlayClick(kind, x, y)
   end
 end
 
--- Escape cancels Acrobat and Eye (nothing was taken yet). Steal, Angel, and
--- Purge are commitments and cannot be canceled.
+-- Escape cancels Acrobat, Eye, and Steal (2.7) — nothing was committed yet.
+-- Angel and Purge are commitments and cannot be canceled.
 local function choiceOverlayCancel(kind)
   if kind == "acrobat" then
     S.jokers.acrobat_pending = nil
@@ -798,6 +878,17 @@ local function choiceOverlayCancel(kind)
     S.jokers.eye_choice_pending = nil
     resetChoiceUI()
     setStatus("Eye: canceled.")
+  elseif kind == "steal" then
+    -- 2.7: revealed jokers return to the pool; the Steal joker returns to hand
+    -- and the turn's joker use is undone.
+    FX.cancel_steal(S)
+    if UI.pendingChoiceJoker then
+      table.insert(S.jokers.hand, UI.pendingChoiceJoker)
+      UI.pendingChoiceJoker = nil
+    end
+    S.jokers.used_this_turn = false
+    resetChoiceUI()
+    setStatus("Steal: canceled.")
   end
 end
 
@@ -853,6 +944,12 @@ local function drawChecklistUI()
   -- (Double = dim yellow, Protected = dim blue, Lose = dim red).
   local cyber = Effects.get(S, "cybernetic")
   local cyber_idx = cyber and math.max(1, math.min(3, cyber.turn_index or 1))
+  -- 2.8: hands protected by Purge get an asterisk for the effect's duration.
+  local purge = Effects.get(S, "purge_immunity")
+  local protected_set = {}
+  if purge and purge.hands then
+    for _, h in ipairs(purge.hands) do protected_set[h] = true end
+  end
   for _, name in ipairs(Rules.CATEGORIES) do
     if cyber and cyber.hacks and cyber.hacks[name] then
       local st = cyber.hacks[name][cyber_idx]
@@ -866,8 +963,9 @@ local function drawChecklistUI()
     end
     local done = GS.playedHands[name]
     local box = done and "[x] " or "[ ] "
+    local star = protected_set[name] and " *" or ""  -- 2.8 Purge marker
     love.graphics.setColor(done and 0.2 or 0, done and 0.6 or 0, done and 0.2 or 0)
-    love.graphics.print(box .. name, x, y)
+    love.graphics.print(box .. name .. star, x, y)
     y = y + 22
   end
   love.graphics.setColor(1,1,1)
@@ -938,6 +1036,8 @@ function love.load()
   love.math.setRandomSeed(os.time())
   font = love.graphics.newFont(16)
   love.graphics.setFont(font)
+  -- 3.5.4: background colour #486478 ≈ (0.282, 0.392, 0.471).
+  love.graphics.setBackgroundColor(0.282, 0.392, 0.471)
 
   -- Show the title screen first; restartGame() runs when the player clicks Start.
   GS.phase = "TITLE"
@@ -948,8 +1048,14 @@ function love.update(dt)
   -- has settled (avoids recursive nextTurn calls).
   if S.jokers and S.jokers.peacock_extra_pending then
     S.jokers.peacock_extra_pending = nil
-    nextTurn()
-    setStatus("Peacock bonus: extra turn!")
+    nextTurn(true)  -- 2.3: extra turn — counter shows "Extra", no attack
+  end
+  -- 3.3: a joker was earned but the hand was full and it was not cap-bypass
+  -- eligible — inform the player (the draw was not consumed; it stays in pool).
+  if S.jokers and S.jokers.last_lost then
+    local def = JokerReg.by_id[S.jokers.last_lost]
+    setStatus("Joker lost: " .. ((def and def.name) or tostring(S.jokers.last_lost)))
+    S.jokers.last_lost = nil
   end
 end
 
@@ -1050,15 +1156,19 @@ function love.mousepressed(x, y, b)
     return
   end
 
+  -- 3.2: card and joker selection are mutually exclusive — selecting one clears
+  -- the other so both can never be active simultaneously.
   local ji = jokerAtPosition(x, y)
   if ji then
     selectedJoker = (selectedJoker == ji) and nil or ji
+    if selectedJoker then selected = {} end
     return
   end
 
   local i = cardAtPosition(x, y)
   if i then
     selected[i] = not selected[i]
+    selectedJoker = nil
   end
 end
 
@@ -1080,7 +1190,11 @@ function love.keypressed(key)
   -- Escape cancels where it makes sense (Acrobat, Eye).
   local pendingKind = pendingChoiceKind()
   if pendingKind then
-    if key == "escape" then choiceOverlayCancel(pendingKind) end
+    if key == "escape" then
+      choiceOverlayCancel(pendingKind)
+    elseif key == "h" and pendingKind == "acrobat" then
+      UI.acrobatViewHand = not UI.acrobatViewHand  -- 2.5: toggle deck/hand view
+    end
     return
   end
 
@@ -1109,11 +1223,24 @@ function love.keypressed(key)
       setStatus("Turn advanced automatically.")
       return
     end
-    -- PLAY (1–5)
+    -- PLAY (1–5, or 6 cards as two three-of-a-kinds while Cute Joker is active)
     local idxs = selectedIndices()
-    if #idxs >= 1 and #idxs <= 5 then
+    -- 2.4: a 6-card play is only accepted when Cute Joker is active AND the cards
+    -- form two valid, separate three-of-a-kinds (a 6-of-a-kind is rejected).
+    local cuteSix = (#idxs == 6) and S.jokers and S.jokers.cute_active
+                    and Eval.is_two_trips(cardsFromIndices(idxs))
+    if (#idxs >= 1 and #idxs <= 5) or cuteSix then
       local chosen = cardsFromIndices(idxs)
-      local cat = Eval.exact_category(chosen)
+      local cat
+      if cuteSix then
+        cat = "Three of a Kind"
+      else
+        if #idxs == 6 then
+          setStatus("6 cards only play as two three-of-a-kinds (Cute Joker).")
+          return
+        end
+        cat = Eval.exact_category(chosen)
+      end
       if not cat then
         setStatus("Invalid selection for a minimal hand.")
         return
@@ -1132,7 +1259,12 @@ function love.keypressed(key)
       for _, c in ipairs(toPlayed) do
         if c.temporary then
           c.temporary = nil
-          if deck and deck.cards then table.insert(deck.cards, c) end
+          if deck and deck.cards then
+            table.insert(deck.cards, c)
+            -- 3.5.2: a Bicycle temp card that is played becomes permanent — the
+            -- run's total card count grows.
+            if deck.addPermanentTotal then deck:addPermanentTotal(1) end
+          end
         else
           table.insert(toCommit, c)
         end
@@ -1156,12 +1288,19 @@ function love.keypressed(key)
 
       -- Mark the category & count a move
       GS.playedHands[cat] = true
-      -- Award score & mark for attack resolution
+      -- 2.4: a Cute Joker 6-card play is two three-of-a-kinds, so it scores
+      -- the Three of a Kind award twice and consumes the flag.
       local msg = "Played: "..cat.."  |  Drew "..tostring(got)
       if Scoring then
         local gained = Scoring.apply_award(S, cat, toPlayed)
-        msg = "Played: "..cat.."  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
+        if cuteSix then
+          gained = gained + Scoring.apply_award(S, cat, toPlayed)
+          msg = "Cute Joker: two Three of a Kinds  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
+        else
+          msg = "Played: "..cat.."  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
+        end
       end
+      if cuteSix and S.jokers then S.jokers.cute_active = nil end
       setStatus(msg)
       if Attacks then Attacks.note_played_this_turn(S, cat) end
 
@@ -1180,10 +1319,6 @@ function love.keypressed(key)
       elseif threshold_done then
         GS.phase = "THRESHOLD"
         UI.overlay = { kind = "threshold", message = "Threshold completed" }
-      elseif S.jokers and S.jokers.cute_active and cat == "Three of a Kind" then
-        -- Cute Joker: stay in MAIN for a second Three of a Kind this turn.
-        S.jokers.cute_active = nil
-        setStatus("Cute Joker: play your second Three of a Kind.")
       else
         enterEndPhase()
       end
@@ -1255,9 +1390,34 @@ function love.keypressed(key)
     elseif S.jokers.used_this_turn then
       setStatus("Joker already used this turn.")
     else
-      local res = Jokers.use(S, idx, buildJokerCtx())
+      local jid = S.jokers.hand[idx]
+      local ctx = buildJokerCtx()
+      -- 2.13: Fibonacci uses its acquisition-time count (matched by ordinal).
+      if jid == "fibonacci" then
+        local ordinal = 0
+        for i = 1, idx do if S.jokers.hand[i] == "fibonacci" then ordinal = ordinal + 1 end end
+        S.jokers.fib_counts = S.jokers.fib_counts or {}
+        ctx.fib_count = table.remove(S.jokers.fib_counts, ordinal) or 0
+      end
+      local res = Jokers.use(S, idx, ctx)
       selectedJoker = nil
-      if res and res.msg then
+      -- 2.7: remember the joker that opened a choice overlay so Steal can be
+      -- cancelled (joker returns to hand, the use is undone).
+      if res and res.pending then UI.pendingChoiceJoker = jid end
+      -- 2.9: Food Joker on use — permanently add 3 random cards to the deck.
+      if jid == "food" then
+        local added = 0
+        for _ = 1, 3 do
+          local suit = ({"♠","♥","♦","♣"})[love.math.random(1,4)]
+          local rank = ({"A","2","3","4","5","6","7","8","9","10","J","Q","K"})[love.math.random(1,13)]
+          table.insert(deck.cards, { suit = suit, rank = rank })
+          added = added + 1
+        end
+        if deck.addPermanentTotal then deck:addPermanentTotal(added) end
+        -- The +3 card cap is gone now Food left the hand; trim regeneration is
+        -- automatic (can_draw returns 0 while hand is above the new cap).
+        setStatus("Food Joker: added 3 cards to the deck. Hand cap back to "..HAND_MAX..".")
+      elseif res and res.msg then
         setStatus(res.msg)
       else
         setStatus("Used joker.")
@@ -1273,9 +1433,16 @@ function love.keypressed(key)
         return
       end
       S.jokers.architect_site = S.jokers.architect_site or {}
+      -- 2.11: building site maximum is 5 cards.
+      local room = 5 - #S.jokers.architect_site
+      if room <= 0 then
+        setStatus("Architect: site is full (max 5 cards).")
+        return
+      end
       table.sort(idxs, function(a,b) return a>b end)
       local moved = 0
       for _, i in ipairs(idxs) do
+        if moved >= room then break end
         table.insert(S.jokers.architect_site, hand[i])
         table.remove(hand, i)
         moved = moved + 1
@@ -1296,7 +1463,9 @@ function love.keypressed(key)
     if GS.phase == "MAIN" and S.jokers and S.jokers.architect_active
        and S.jokers.architect_site and #S.jokers.architect_site >= 1 then
       local site = S.jokers.architect_site
-      local cat = Eval.exact_category(site)
+      -- 2.11: evaluate the HIGHEST valid poker category among the site cards
+      -- (rank + suit; a flush beats a contained pair).
+      local cat = Eval.best_category(site)
       if not cat then
         setStatus("Architect: site is not a valid hand yet.")
         return
@@ -1310,8 +1479,9 @@ function love.keypressed(key)
     end
 
   elseif key == "c" then
-    -- CLEAR selection
+    -- 3.2: CLEAR both card selection and the active joker selection.
     selected = {}
+    selectedJoker = nil
     setStatus("Selection cleared.")
   end
 
@@ -1357,8 +1527,9 @@ function love.draw()
   -- the joker row (JOKER_Y=250). Worst-case final hud_y below is ~190, leaving a
   -- safe gap. If lines are ever added past y=220, tighten the +20 increments to +18.
   local hud_y = 60
-  -- HUD line 1: ~y=60  (Deck / Discard / Played counts)
-  love.graphics.print("Deck: "..deckCount.."  Discard: "..discardCount.."  Played: "..playedCount, 40, hud_y)
+  -- HUD line 1: ~y=60  (Deck N / Total ever existed, Discard / Played counts)
+  local deckTotal = (deck and deck.total_cards) or (deckCount + discardCount + playedCount)
+  love.graphics.print("Deck: "..deckCount.." / "..deckTotal.."  Discard: "..discardCount.."  Played: "..playedCount, 40, hud_y)
   hud_y = hud_y + 20
   -- HUD line 2: ~y=80  (Score / threshold target) — only when S.meta exists
   if S and S.meta then
@@ -1379,19 +1550,23 @@ function love.draw()
     hud_y = hud_y + 20
   end
   -- HUD line 4: ~y=120 (Hand size / max)
-  love.graphics.print("Hand size: "..tostring(#hand).." (max "..HAND_MAX..")", 40, hud_y)
+  love.graphics.print("Hand size: "..tostring(#hand).." (max "..effectiveHandMax()..")", 40, hud_y)
   hud_y = hud_y + 30
   -- HUD line 5: ~y=150 (Jokers in hand vs base cap of 5; Food Joker may extend at runtime)
   love.graphics.print("Jokers: " .. tostring(#(S.jokers and S.jokers.hand or {})) .. "/5", 40, hud_y)
   hud_y = hud_y + 20
   -- HUD line 6: ~y=170 (Turn / phase — single shared line; Endless tag when active)
-  love.graphics.print("Turn: "..tostring(GS.turn or 1).."   Phase: "..GS.phase..(GS.endless and "   [Endless]" or ""), 40, hud_y)
+  -- 2.3: an extra turn shows "Extra" instead of a number.
+  local turnLabel = GS.extra_turn and "Extra" or tostring(GS.turn or 1)
+  love.graphics.print("Turn: "..turnLabel.."   Phase: "..GS.phase..(GS.endless and "   [Endless]" or ""), 40, hud_y)
   hud_y = hud_y + 20
   -- HUD line 7: ~y=190 (PREP indicator — visible during setup turns only)
+  -- 3.5.3: keep the yellow setup text inside the left column (width 340) so it
+  -- never overlaps the checklist entries (e.g. "[ ] Straight") anchored at x=400.
   if GS.phase == "PREP" then
     love.graphics.setColor(0.9, 0.8, 0.3)
-    love.graphics.print("⚙ SETUP PHASE — " .. GS.prep_turns_remaining .. " turn(s) left  [S = Skip for bonus]", 40, hud_y)
-    hud_y = hud_y + 20
+    love.graphics.printf("⚙ SETUP PHASE — " .. GS.prep_turns_remaining .. " turn(s) left  [S = Skip for bonus]", 40, hud_y, 340, "left")
+    hud_y = hud_y + 40
     love.graphics.setColor(1, 1, 1)
   end
 
@@ -1440,6 +1615,52 @@ function love.draw()
     love.graphics.print("🦚 Peacock: extra turn every 5 turns", 400, fx_y)
     love.graphics.setColor(1, 1, 1)
     fx_y = fx_y + 18
+  end
+  -- 2.2 / 2.8: active multi-turn joker effects (name + remaining turns).
+  -- Helper: remaining turns for the first active effect entry with this id.
+  local function effectTurns(id)
+    for _, e in ipairs(S.active_effects or {}) do
+      if e.id == id then return e.turns_remaining end
+    end
+    return nil
+  end
+  -- Cybernetic (running effect)
+  local cyberT = effectTurns("cybernetic")
+  if cyberT then
+    love.graphics.setColor(0.7, 0.7, 0.9)
+    love.graphics.print("🤖 Cybernetic: hacked hands ("..cyberT.." turn(s))", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+  -- Purge (2.8) — show remaining turns and the two protected hands
+  local purgeT = effectTurns("purge_immunity")
+  if purgeT then
+    local p = Effects.get(S, "purge_immunity")
+    local label = (p and p.hands and table.concat(p.hands, " & ")) or ""
+    love.graphics.setColor(0.6, 0.85, 0.6)
+    love.graphics.print("🧪 Purge: "..label.." protected ("..purgeT.." turn(s))", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+  -- Galaxy (score multiplier) — runs for the rest of the threshold
+  if Effects.has(S, "score_multiplier") then
+    local p = Effects.get(S, "score_multiplier")
+    love.graphics.setColor(0.8, 0.7, 0.95)
+    love.graphics.print("🌌 Galaxy: all hands ×"..tostring((p and p.mult) or 1.5).." this threshold", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+  -- Four of Clubs — passive bonus active while it is in hand
+  if S.jokers and S.jokers.hand then
+    for _, jid in ipairs(S.jokers.hand) do
+      if jid == "fourofclubs" then
+        love.graphics.setColor(0.6, 0.8, 0.6)
+        love.graphics.print("♣ Four of Clubs: Club/4 hands score extra", 400, fx_y)
+        love.graphics.setColor(1, 1, 1)
+        fx_y = fx_y + 18
+        break
+      end
+    end
   end
 
 
