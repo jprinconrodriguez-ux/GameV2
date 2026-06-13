@@ -34,9 +34,10 @@ R.all = {
   { id="peacock",     name="Peacock Joker", rarity="mythic",    jtype="active",    effect="peacock"        },
 }
 
--- Joker rarity spawn chances (infinite pool — Post-M4 canonical numbers).
--- Used as relative weights when picking a rarity for a pool draw. They sum to
--- 100 so each weight reads directly as a percentage.
+-- Joker rarity spawn chances (infinite pool). Weights are relative and sum to
+-- 100 so each reads directly as a percentage.
+--   M3 (T1–T3): the base distribution.
+--   T4+: a harder distribution (more commons, fewer high rarities). 4.2.
 R.rarity_weights = {
   common    = 29,
   uncommon  = 24,
@@ -45,6 +46,22 @@ R.rarity_weights = {
   legendary = 10,
   mythic    =  6,
 }
+
+R.rarity_weights_t4 = {
+  common    = 33,
+  uncommon  = 27,
+  rare      = 20,
+  epic      = 10,
+  legendary =  6,
+  mythic    =  4,
+}
+
+-- Return the rarity weight table for a given threshold (4.2): base for T1–T3,
+-- the harder table for T4+.
+function R.weights_for_threshold(t)
+  if t and t >= 4 then return R.rarity_weights_t4 end
+  return R.rarity_weights
+end
 
 -- True if a joker should never be drawn/awarded (hidden, inactive, or deferred).
 function R.is_excluded(def)

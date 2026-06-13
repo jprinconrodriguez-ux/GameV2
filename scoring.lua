@@ -49,31 +49,30 @@ end
 
 -- M4: optional third argument `played_cards` (raw card tables) enables the
 -- Four of Clubs triggered passive. Joker scoring hooks apply in this order:
--- cybernetic hack → The Flush → Trader double → Galaxy multiplier → Four of
--- Clubs flat bonus.
+-- cybernetic hack (d/l) → Trader double → Galaxy multiplier → Four of Clubs
+-- flat bonus. (The Flush is now an instant-score on use; see joker_effects.)
 function M.apply_award(S, hand_name, played_cards)
   local t = clamp_threshold(S.meta.threshold)
   local pts = M.get_award(t, hand_name)
 
-  -- Cybernetic: hacked hands may score double ("d") or nothing ("l") this turn.
+  -- Cybernetic (2.10): this turn's hacked hands. "d" doubles the award; "l"
+  -- makes the hand lose its T1 base penalty worth of points when played.
   if Effects.has(S, "cybernetic") then
     local p = Effects.get(S, "cybernetic")
-    local states = p and p.hacks and p.hacks[hand_name]
-    if states then
-      local idx = math.max(1, math.min(3, p.turn_index or 1))
-      local st = states[idx]
-      if st == "d" then pts = pts * 2
-      elseif st == "l" then pts = 0 end
+    local idx = math.max(1, math.min(3, p and p.turn_index or 1))
+    local entry = p and p.schedule and p.schedule[idx]
+    if entry then
+      for i, h in ipairs(entry.hands) do
+        if h == hand_name then
+          local c = entry.cond[i]
+          if c == "d" then
+            pts = pts * 2
+          elseif c == "l" then
+            pts = pts - (M.get_award(1, hand_name) * 2)  -- T1 base penalty
+          end
+        end
+      end
     end
-  end
-
-  -- The Flush: a Flush scores double if the current attack is also a Flush.
-  -- The flag is consumed by any Flush play, whether or not it doubled.
-  if hand_name == "Flush" and S.jokers and S.jokers.flush_active then
-    if S.combat and S.combat.current_attack == "Flush" then
-      pts = pts * 2
-    end
-    S.jokers.flush_active = nil
   end
 
   -- The Trader: next played hand scores double.
@@ -88,19 +87,13 @@ function M.apply_award(S, hand_name, played_cards)
     pts = math.ceil(pts * ((p and p.mult) or 1))
   end
 
-  -- Four of Clubs (triggered passive): hands containing a Club or a 4-rank
-  -- score +6 at T1, doubling per threshold.
-  if played_cards and S.jokers and S.jokers.hand then
-    local has_4oc = false
-    for _, jid in ipairs(S.jokers.hand) do
-      if jid == "fourofclubs" then has_4oc = true break end
-    end
-    if has_4oc then
-      for _, c in ipairs(played_cards) do
-        if c.suit == "♣" or tostring(c.rank) == "4" then
-          pts = pts + 6 * (2 ^ (t - 1))
-          break
-        end
+  -- Four of Clubs (2.5): only after the joker has been USED (fourofclubs_active),
+  -- hands containing a Club or a 4-rank score +6 at T1, doubling per threshold.
+  if played_cards and S.jokers and S.jokers.fourofclubs_active then
+    for _, c in ipairs(played_cards) do
+      if c.suit == "♣" or tostring(c.rank) == "4" then
+        pts = pts + 6 * (2 ^ (t - 1))
+        break
       end
     end
   end

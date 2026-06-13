@@ -39,6 +39,10 @@ function M.announce(S, rng, probs)
   S.combat.cancel_current_attack = false
   S.combat.halve_penalty = false
   S.combat.just_played = nil
+  -- Per-turn streak/joker bookkeeping (v4.2): one streak count per turn; the
+  -- Golden same-turn double only lasts the turn it was set.
+  S.combat.streak_counted_this_turn = nil
+  S.combat.golden_double = nil
   return target
 end
 
@@ -86,17 +90,20 @@ function M.resolve(S, scoring)
     S.combat.just_played = nil
     return res
   end
-  -- Cybernetic: a hacked hand in the Protected ("p") state this turn takes no penalty.
+  -- Cybernetic (2.10): a hand assigned Protected ("p") this turn auto-blocks the
+  -- attack if it is the target.
   if Effects.has(S, "cybernetic") then
     local p = Effects.get(S, "cybernetic")
-    local states = p and p.hacks and p.hacks[target]
-    if states then
-      local idx = math.max(1, math.min(3, p.turn_index or 1))
-      if states[idx] == "p" then
-        local res = { resolved=true, protected=true, target=target }
-        S.combat.current_attack = nil
-        S.combat.just_played = nil
-        return res
+    local idx = math.max(1, math.min(3, p and p.turn_index or 1))
+    local entry = p and p.schedule and p.schedule[idx]
+    if entry then
+      for i, h in ipairs(entry.hands) do
+        if h == target and entry.cond[i] == "p" then
+          local res = { resolved=true, protected=true, target=target }
+          S.combat.current_attack = nil
+          S.combat.just_played = nil
+          return res
+        end
       end
     end
   end
@@ -131,11 +138,8 @@ local T3 = {
   ["High Card"] = 17, ["Pair"] = 14, ["Two Pair"] = 12, ["Three of a Kind"] = 10,
   ["Flush"] = 16, ["Straight"] = 12, ["Full House"] = 11, ["Four of a Kind"] = 8,
 }
--- T4/T5 use the same table (locks at T5 for T4+). Included now for completeness;
--- not yet wired into probs_for_threshold.
--- TODO: FUTURE — apply T4+ prob tables and rarity spawn changes (F.1). At T4+
--- probs should lock to this table instead of falling through to T3.
-local T4_T5 = {
+-- T4+ (4.1): one shared table for all of T4 and beyond (flatter distribution).
+local T4_PLUS = {
   ["High Card"] = 11, ["Pair"] = 12, ["Two Pair"] = 12, ["Three of a Kind"] = 13,
   ["Flush"] = 14, ["Straight"] = 13, ["Full House"] = 14, ["Four of a Kind"] = 11,
 }
@@ -143,7 +147,8 @@ local T4_T5 = {
 function M.probs_for_threshold(t)
   if not t or t <= 1 then return T1
   elseif t == 2 then return T2
-  else return T3 end  -- TODO: FUTURE (F.1) — return T4_T5 for t >= 4
+  elseif t == 3 then return T3
+  else return T4_PLUS end  -- 4.1: T4 and beyond share this table
 end
 
 return M

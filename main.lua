@@ -425,36 +425,72 @@ local function buildJokerCtx()
   return ctx
 end
 
-local function enterEndPhase()
-  -- Resolve attack then auto-advance
-  if Attacks and Scoring then
-    local res = Attacks.resolve(S, Scoring)
-    if res and res.penalized then
-      if res.halved then
-        setStatus("Attack: "..res.target.." ⚡ penalty halved  -" .. tostring(res.penalty) .. " pts")
-      else
-        setStatus("Attack: "..res.target.." ⚠  -" .. tostring(res.penalty) .. " pts")
-      end
-      S.combat.correct_streak = 0
-    elseif res and res.canceled then
-      setStatus("Attack canceled.")
-      S.combat.correct_streak = 0
-    elseif res and res.shielded then
-      setStatus("Anti-Joker: attack on "..res.target.." shielded.")
-    elseif res and res.purged then
-      setStatus("Purge: attack on "..res.target.." nullified.")
-    elseif res and res.protected then
-      -- 3 correct defenses in a row grant 1 joker
-      S.combat.correct_streak = (S.combat.correct_streak or 0) + 1
-      if S.combat.correct_streak >= 3 then
-        if Jokers then Jokers.gain_from_pool(S, 1, love.math, buildJokerCtx()) end
-        S.combat.correct_streak = 0
-        setStatus("Attack avoided by playing "..res.target..".  Streak bonus: +1 Joker!")
-      else
-        setStatus("Attack avoided by playing "..res.target..".")
-      end
-    end
+-- 1.2: mid-turn threshold/win check. Call after any scoring event. Returns true
+-- if a threshold/win overlay was triggered (caller should stop processing).
+local function checkThresholdWin()
+  if not (S and S.meta) then return false end
+  if not (Scoring and Scoring.is_threshold_complete and Scoring.is_threshold_complete(S)) then
+    return false
   end
+  if S.meta.threshold == 3 then
+    if Rules.isAllMarked(GS) then
+      GS.phase = "WIN"
+      UI.overlay = { kind = "win", message = "You Win! Continue to Endless?" }
+      return true
+    end
+    return false  -- T3 score met but not all 8 hands → no win yet
+  end
+  GS.phase = "THRESHOLD"
+  UI.overlay = { kind = "threshold", message = "Threshold completed" }
+  return true
+end
+
+-- 1.1 / 3.2: register a scored hand for the attack-match streak (S.meta.streak).
+-- Extra turns are excluded entirely. Every 3rd match grants a bonus joker. Called
+-- for manual plays AND joker auto-scores (Golden 2.8.2, The Flush 2.9), so the
+-- streak (and any milestone joker) resolves before a threshold transition.
+local function noteScoredHand(handName)
+  if GS.extra_turn then return end                         -- 1.1: skip extra turns
+  if not (S.combat and S.combat.current_attack) then return end
+  if handName ~= S.combat.current_attack then return end
+  if S.combat.streak_counted_this_turn then return end     -- one count per turn
+  S.combat.streak_counted_this_turn = true
+  S.meta.streak = (S.meta.streak or 0) + 1
+  if S.meta.streak % 3 == 0 then
+    if Jokers then Jokers.gain_from_pool(S, 1, love.math, buildJokerCtx()) end
+  end
+end
+
+-- Resolve the current attack and return a short status fragment. Applies the
+-- penalty (resets the streak on a miss). Does NOT advance the turn.
+local function resolveAttackMsg()
+  if not (Attacks and Scoring) then return "" end
+  local res = Attacks.resolve(S, Scoring)
+  if not (res and res.resolved) then return "" end
+  if res.penalized then
+    S.meta.streak = 0  -- 1.1: a missed attack breaks the streak
+    if res.halved then
+      return "Attack "..res.target.." ⚡ -"..tostring(res.penalty).." (halved)"
+    end
+    return "Attack "..res.target.." ⚠ -"..tostring(res.penalty)
+  elseif res.canceled then
+    return "Attack canceled."
+  elseif res.shielded then
+    return "Anti-Joker shielded "..res.target.."."
+  elseif res.purged then
+    return "Purge nullified "..res.target.."."
+  elseif res.protected then
+    return "Blocked "..res.target.."!"
+  end
+  return ""
+end
+
+-- End-of-turn path used by the DEBUG skip (and any non-play turn end): resolve
+-- the attack, run the win check, then advance.
+local function enterEndPhase()
+  local atkMsg = resolveAttackMsg()
+  if atkMsg ~= "" then setStatus(atkMsg) end
+  if checkThresholdWin() then return end
   nextTurn()
 end
 
@@ -505,6 +541,8 @@ nextTurn = function(isExtra)
     Attacks.announce(S, love.math)
   end
   if Jokers then Jokers.start_turn(S) end
+  -- 3.1: at turn start, if the hand is empty and nothing can be drawn, end the run.
+  if getHandSize() == 0 then maybeTriggerDepletion() end
 end
 
 -- Discard (up to 5) and redraw same amount (respect HAND_MAX)
@@ -545,6 +583,7 @@ local function discardSelected()
   elseif Rules and Rules.sortHandByRank then
     Rules.sortHandByRank(hand)
   end
+  maybeTriggerDepletion()  -- 3.1 (no-op while the discard pile still has cards)
   setStatus("Discarded "..#toDiscard..", drew "..tostring(drew)..".")
   if GS.phase == "PREP" then
     usePrepTurn()
@@ -940,10 +979,17 @@ local function drawChecklistUI()
   love.graphics.setColor(1,1,1)
   love.graphics.print("Categories (played at least once):", x, y)
   y = y + 20
-  -- M4 Cybernetic: per-hand tint for the current turn's hacked state
-  -- (Double = dim yellow, Protected = dim blue, Lose = dim red).
+  -- Cybernetic (2.10): colour the two hacked hands for THIS turn — yellow for
+  -- Double (d), blue for Protected (p), red for Lose (l).
   local cyber = Effects.get(S, "cybernetic")
-  local cyber_idx = cyber and math.max(1, math.min(3, cyber.turn_index or 1))
+  local cyber_cond = {}
+  if cyber and cyber.schedule then
+    local idx = math.max(1, math.min(3, cyber.turn_index or 1))
+    local entry = cyber.schedule[idx]
+    if entry then
+      for i, h in ipairs(entry.hands) do cyber_cond[h] = entry.cond[i] end
+    end
+  end
   -- 2.8: hands protected by Purge get an asterisk for the effect's duration.
   local purge = Effects.get(S, "purge_immunity")
   local protected_set = {}
@@ -951,8 +997,8 @@ local function drawChecklistUI()
     for _, h in ipairs(purge.hands) do protected_set[h] = true end
   end
   for _, name in ipairs(Rules.CATEGORIES) do
-    if cyber and cyber.hacks and cyber.hacks[name] then
-      local st = cyber.hacks[name][cyber_idx]
+    local st = cyber_cond[name]
+    if st then
       local tint = (st == "d" and {0.6, 0.6, 0.1, 0.35})
                 or (st == "p" and {0.2, 0.35, 0.8, 0.35})
                 or (st == "l" and {0.8, 0.15, 0.15, 0.35})
@@ -1056,6 +1102,37 @@ function love.update(dt)
     local def = JokerReg.by_id[S.jokers.last_lost]
     setStatus("Joker lost: " .. ((def and def.name) or tostring(S.jokers.last_lost)))
     S.jokers.last_lost = nil
+  end
+
+  -- 2.2: Food Joker activates the moment it lands in hand — draw 3 cards into the
+  -- hand (the cap is already +3 via effectiveHandMax while Food is in hand). When
+  -- Food later leaves the hand the flag resets; the extra cards stay (they simply
+  -- don't regenerate, since can_draw returns 0 above the lowered cap).
+  if S.jokers and S.jokers.hand then
+    local hasFood = Jokers.food_in_hand(S)
+    if hasFood and not S.jokers.food_acquired then
+      S.jokers.food_acquired = true
+      if GS.phase == "MAIN" or GS.phase == "PREP" then
+        local drew = drawN(3)
+        setStatus("Food Joker acquired: +"..tostring(drew).." cards, hand cap +3.")
+      end
+    elseif (not hasFood) and S.jokers.food_acquired then
+      S.jokers.food_acquired = false
+    end
+  end
+
+  -- 2.8.1/2.8.2: Golden fired on acquisition (inside gain_joker) — process its
+  -- pending streak credit and a possible mid-turn threshold win.
+  if S.combat and S.combat.golden_streak_pending then
+    local h = S.combat.golden_streak_pending
+    S.combat.golden_streak_pending = nil
+    noteScoredHand(h)
+  end
+
+  -- 1.2: catch a mid-turn threshold/win from ANY scoring source (auto-scores,
+  -- streak bonuses, etc.) while a turn is in progress.
+  if (GS.phase == "MAIN") and not (UI and UI.overlay) then
+    checkThresholdWin()
   end
 end
 
@@ -1285,43 +1362,41 @@ function love.keypressed(key)
       for i = 1, #drawn do table.insert(hand, drawn[i]) end
       local got = #drawn
             if currentSort == "suit" and Rules and Rules.sortHandBySuit then Rules.sortHandBySuit(hand) elseif Rules and Rules.sortHandByRank then Rules.sortHandByRank(hand) end
+      maybeTriggerDepletion()  -- 3.1: out of cards to refill → Game Over
+      if GS.phase == "LOSS" then
+        GS.playedHands[cat] = true
+        return  -- run is over; do not advance the turn
+      end
 
-      -- Mark the category & count a move
+      -- Mark the category & note it for attack blocking + streak.
       GS.playedHands[cat] = true
-      -- 2.4: a Cute Joker 6-card play is two three-of-a-kinds, so it scores
-      -- the Three of a Kind award twice and consumes the flag.
-      local msg = "Played: "..cat.."  |  Drew "..tostring(got)
+      if Attacks then Attacks.note_played_this_turn(S, cat) end
+      noteScoredHand(cat)                       -- 1.1: attack-match streak
+
+      -- 1.3: attack resolves (penalty) FIRST, then the hand's award is credited.
+      local atkMsg = resolveAttackMsg()
+
+      local gained = 0
       if Scoring then
-        local gained = Scoring.apply_award(S, cat, toPlayed)
-        if cuteSix then
+        gained = Scoring.apply_award(S, cat, toPlayed)
+        -- 2.4: Cute 6-card play is two three-of-a-kinds → score it twice.
+        if cuteSix then gained = gained + Scoring.apply_award(S, cat, toPlayed) end
+        -- 2.8.3: Golden auto-scored this hand earlier this turn → manual copy doubles.
+        if S.combat and S.combat.golden_double == cat then
           gained = gained + Scoring.apply_award(S, cat, toPlayed)
-          msg = "Cute Joker: two Three of a Kinds  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
-        else
-          msg = "Played: "..cat.."  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
+          S.combat.golden_double = nil
         end
       end
       if cuteSix and S.jokers then S.jokers.cute_active = nil end
+
+      local label = cuteSix and "Cute: two Three of a Kinds" or ("Played "..cat)
+      local msg = label.."  |  +"..tostring(gained).." pts  |  Drew "..tostring(got)
+      if atkMsg ~= "" then msg = msg.."   ||   "..atkMsg end
       setStatus(msg)
-      if Attacks then Attacks.note_played_this_turn(S, cat) end
 
-      -- Canonical win condition (Rule Book): T3 + score target + all 8 hands marked.
-      -- Below T3, reaching the score target completes the threshold as before.
-      local t3_win = (S.meta.threshold == 3)
-                   and Scoring.is_threshold_complete(S)
-                   and Rules.isAllMarked(GS)
-
-      local threshold_done = (S.meta.threshold ~= 3)
-                           and Scoring.is_threshold_complete(S)
-
-      if t3_win then
-        GS.phase = "WIN"
-        UI.overlay = { kind = "win", message = "You Win! Continue to Endless?" }
-      elseif threshold_done then
-        GS.phase = "THRESHOLD"
-        UI.overlay = { kind = "threshold", message = "Threshold completed" }
-      else
-        enterEndPhase()
-      end
+      -- 1.2: mid-turn threshold/win check, then advance if play continues.
+      if checkThresholdWin() then return end
+      nextTurn()
     else
       setStatus("Select 1–5 cards to play.")
     end
@@ -1404,23 +1479,20 @@ function love.keypressed(key)
       -- 2.7: remember the joker that opened a choice overlay so Steal can be
       -- cancelled (joker returns to hand, the use is undone).
       if res and res.pending then UI.pendingChoiceJoker = jid end
-      -- 2.9: Food Joker on use — permanently add 3 random cards to the deck.
-      if jid == "food" then
-        local added = 0
-        for _ = 1, 3 do
-          local suit = ({"♠","♥","♦","♣"})[love.math.random(1,4)]
-          local rank = ({"A","2","3","4","5","6","7","8","9","10","J","Q","K"})[love.math.random(1,13)]
-          table.insert(deck.cards, { suit = suit, rank = rank })
-          added = added + 1
-        end
-        if deck.addPermanentTotal then deck:addPermanentTotal(added) end
-        -- The +3 card cap is gone now Food left the hand; trim regeneration is
-        -- automatic (can_draw returns 0 while hand is above the new cap).
-        setStatus("Food Joker: added 3 cards to the deck. Hand cap back to "..HAND_MAX..".")
-      elseif res and res.msg then
+      if res and res.msg then
         setStatus(res.msg)
       else
         setStatus("Used joker.")
+      end
+      -- 2.2: Food Joker — on use the +3 hand-cap bonus is removed (cards already
+      -- in hand stay). The bonus reverts automatically because Food has left the
+      -- hand (effectiveHandMax checks hand contents); clear the acquire flag.
+      if jid == "food" and S.jokers then S.jokers.food_acquired = false end
+      -- 2.8.2 / 2.9: a joker auto-score (Golden, The Flush) counts toward the
+      -- attack-match streak and can complete the threshold mid-turn.
+      if res and res.auto_score then
+        noteScoredHand(res.auto_score)
+        checkThresholdWin()  -- 1.2 / 2.8.1: may set the win/threshold overlay
       end
     end
 
@@ -1473,9 +1545,14 @@ function love.keypressed(key)
       local gained = Scoring.apply_award(S, cat, site)
       GS.playedHands[cat] = true
       if Attacks then Attacks.note_played_this_turn(S, cat) end
+      noteScoredHand(cat)
       if deck and deck.commitPlayed then deck:commitPlayed(site) end
+      -- 2.3: the building site is a one-time action — clear the site AND close the
+      -- Architect entirely after playing it.
       S.jokers.architect_site = {}
+      S.jokers.architect_active = false
       setStatus("Architect: played "..cat.." from building site.  +"..tostring(gained).." pts")
+      checkThresholdWin()  -- 1.2: a site play can complete the threshold
     end
 
   elseif key == "c" then
@@ -1543,10 +1620,10 @@ function love.draw()
     love.graphics.print("Attack → "..S.combat.current_attack, 40, hud_y)
     hud_y = hud_y + 20
   end
-  -- HUD: correct-defense streak (3 in a row grants a joker)
-  local streak = (S and S.combat and S.combat.correct_streak) or 0
+  -- HUD: attack-match streak (1.1) — every 3 in a row grants a joker.
+  local streak = (S and S.meta and S.meta.streak) or 0
   if streak > 0 then
-    love.graphics.print("Streak: "..tostring(streak).."/3 ✓", 40, hud_y)
+    love.graphics.print("Streak: "..tostring(streak).."  (next joker at "..tostring((math.floor(streak/3)+1)*3)..")", 40, hud_y)
     hud_y = hud_y + 20
   end
   -- HUD line 4: ~y=120 (Hand size / max)
@@ -1650,16 +1727,21 @@ function love.draw()
     love.graphics.setColor(1, 1, 1)
     fx_y = fx_y + 18
   end
-  -- Four of Clubs — passive bonus active while it is in hand
-  if S.jokers and S.jokers.hand then
-    for _, jid in ipairs(S.jokers.hand) do
-      if jid == "fourofclubs" then
-        love.graphics.setColor(0.6, 0.8, 0.6)
-        love.graphics.print("♣ Four of Clubs: Club/4 hands score extra", 400, fx_y)
-        love.graphics.setColor(1, 1, 1)
-        fx_y = fx_y + 18
-        break
-      end
+  -- Four of Clubs (2.5) — shown active only AFTER it has been used.
+  if S.jokers and S.jokers.fourofclubs_active then
+    love.graphics.setColor(0.6, 0.8, 0.6)
+    love.graphics.print("♣ Four of Clubs: Club/4 hands score extra", 400, fx_y)
+    love.graphics.setColor(1, 1, 1)
+    fx_y = fx_y + 18
+  end
+  -- Steal (2.1) — jokers disabled for this threshold, greyed in the corner.
+  if S.jokers and S.jokers.steal_disabled and #S.jokers.steal_disabled > 0 then
+    for _, jid in ipairs(S.jokers.steal_disabled) do
+      local def = JokerReg.by_id[jid]
+      love.graphics.setColor(0.5, 0.5, 0.5)
+      love.graphics.print("✖ "..((def and def.name) or jid).." (disabled this threshold)", 400, fx_y)
+      love.graphics.setColor(1, 1, 1)
+      fx_y = fx_y + 18
     end
   end
 

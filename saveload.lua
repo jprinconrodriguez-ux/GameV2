@@ -62,6 +62,9 @@ function M.build_state(deck, hand, GS, S, UI)
       pool                  = deep_copy(S.jokers.pool or nil),
       steal_disabled        = deep_copy(S.jokers.steal_disabled or nil),
       fib_counts            = deep_copy(S.jokers.fib_counts or nil),
+      -- v4.2 state
+      fourofclubs_active    = S.jokers.fourofclubs_active or nil,
+      food_acquired         = S.jokers.food_acquired or nil,
     }
     for i,id in ipairs(S.jokers.hand or {}) do jokerState.hand[i] = id end
   end
@@ -153,6 +156,9 @@ function M.apply_state(state, deck, GS, S, UI, Scoring, Jokers)
       S.jokers.pool           = deep_copy(state.jokers.pool or nil)
       S.jokers.steal_disabled = deep_copy(state.jokers.steal_disabled or nil)
       S.jokers.fib_counts     = deep_copy(state.jokers.fib_counts or nil)
+      -- v4.2 state
+      S.jokers.fourofclubs_active = state.jokers.fourofclubs_active or nil
+      S.jokers.food_acquired      = state.jokers.food_acquired or nil
     end
     -- Rebuild temp_cards as references to the restored hand cards that still
     -- carry the `temporary` flag, so end-of-turn cleanup keeps working.

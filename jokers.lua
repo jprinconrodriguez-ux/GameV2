@@ -25,13 +25,15 @@ end
 -- / Mythic 4). Not part of this patch.
 local RARITY_ORDER = { "common", "uncommon", "rare", "epic", "legendary", "mythic" }
 
-local function pick_rarity(rng)
+-- 4.2: weights depend on the threshold (base for T1–T3, harder table for T4+).
+local function pick_rarity(rng, threshold)
+  local weights = REG.weights_for_threshold(threshold)
   local total = 0
-  for _, r in ipairs(RARITY_ORDER) do total = total + (REG.rarity_weights[r] or 0) end
+  for _, r in ipairs(RARITY_ORDER) do total = total + (weights[r] or 0) end
   local r = rand_int(rng, 1, total)
   local acc = 0
   for _, rarity in ipairs(RARITY_ORDER) do
-    acc = acc + (REG.rarity_weights[rarity] or 0)
+    acc = acc + (weights[rarity] or 0)
     if r <= acc then return rarity end
   end
   return RARITY_ORDER[1]  -- fallback (shouldn't happen)
@@ -42,12 +44,12 @@ end
 -- of that rarity from the registry. Hidden/inactive/deferred jokers (Devil,
 -- Invisible) are already excluded by REG.ids_by_rarity(). Returns nil only if no
 -- drawable joker of the chosen rarity exists. Duplicates are allowed.
-function J.draw_random_joker(rng)
+function J.draw_random_joker(rng, threshold)
   local buckets = REG.ids_by_rarity()
   -- Try the weighted rarity first; if it has no drawable jokers, fall back to
   -- any rarity that does (keeps the infinite pool from ever stalling).
   for _ = 1, 8 do
-    local rarity = pick_rarity(rng)
+    local rarity = pick_rarity(rng, threshold)
     local ids = buckets[rarity]
     if ids and #ids > 0 then
       return ids[rand_int(rng, 1, #ids)]
@@ -71,9 +73,10 @@ function J.ensure_pool(state, rng, n)
   state.jokers = state.jokers or {}
   state.jokers.pool = state.jokers.pool or {}
   n = n or POOL_TARGET
+  local threshold = state.meta and state.meta.threshold
   local guard = 0
   while #state.jokers.pool < n and guard < 1000 do
-    local jid = J.draw_random_joker(rng)
+    local jid = J.draw_random_joker(rng, threshold)
     if not jid then break end
     table.insert(state.jokers.pool, jid)
     guard = guard + 1

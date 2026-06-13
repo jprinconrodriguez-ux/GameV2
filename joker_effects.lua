@@ -96,9 +96,18 @@ function E.steal(state, ctx)
   J.ensure_pool(state, ctx and ctx.rng, 2)
   local pool = state.jokers.pool or {}
   local revealed = {}
-  for _=1,2 do
-    if #pool == 0 then break end
-    table.insert(revealed, table.remove(pool))
+  -- 2.1: the two revealed jokers must be DIFFERENT ids (drawn from different
+  -- positions). Take the top card, then the nearest card below it with a
+  -- different id. If the pool offers only one unique id, reveal just that one.
+  if #pool > 0 then
+    table.insert(revealed, table.remove(pool))  -- top
+    local pick_pos
+    for i = #pool, 1, -1 do
+      if pool[i] ~= revealed[1] then pick_pos = i break end
+    end
+    if pick_pos then
+      table.insert(revealed, table.remove(pool, pick_pos))
+    end
   end
   state.jokers.steal_pending = { ids = revealed }
   state.jokers.steal_choice_pending = true
@@ -334,40 +343,66 @@ end
 -- Randomly hacks 2 hand types for 3 turns. Each turn each hacked hand gets one
 -- of 4 states: Normal 35% ("n"), Double 20% ("d"), Protected 30% ("p"),
 -- Lose 15% ("l"). Cannot carry across thresholds.
+-- ── Cybernetic (Legendary) — reworked (2.10) ─────────────────────────────────
+-- On use, builds a 3-turn schedule. Each turn picks 2 DIFFERENT hand types and
+-- assigns each one of three conditions — Double "d", Protected "p", Lose "l" —
+-- with probabilities 40% / 40% / 20% (no "Normal"). Hands re-roll every turn and
+-- do not carry between thresholds (no_carry). Effects:
+--   d → that hand scores double if played this turn (scoring.lua)
+--   p → if that hand is the attack target, it auto-blocks (attacks.lua)
+--   l → if that hand is played, it loses its T1 base penalty in points (scoring.lua)
 function E.cybernetic(state, ctx)
-  -- TODO: CYBERNETIC REWORK — awaiting design spec (2.14). Current implementation
-  -- preserved as-is; it is safe to use (no crashes, no corrupted state).
   local Effects = require("effects")
   local Rules = require("rules")
   local rng = ctx and ctx.rng
-  local i1 = rand_index(rng, #Rules.CATEGORIES)
-  local i2 = rand_index(rng, #Rules.CATEGORIES - 1)
-  if i2 >= i1 then i2 = i2 + 1 end  -- two distinct hands
-  local picks = { Rules.CATEGORIES[i1], Rules.CATEGORIES[i2] }
-  local function roll_state()
+  local function roll_cond()
     local r = rand_index(rng, 100)
-    if r <= 35 then return "n"
-    elseif r <= 55 then return "d"
-    elseif r <= 85 then return "p"
+    if r <= 40 then return "d"
+    elseif r <= 80 then return "p"
     else return "l" end
   end
-  local hacks = {}
-  for _, h in ipairs(picks) do
-    hacks[h] = { roll_state(), roll_state(), roll_state() }
+  local function pick_two()
+    local i1 = rand_index(rng, #Rules.CATEGORIES)
+    local i2 = rand_index(rng, #Rules.CATEGORIES - 1)
+    if i2 >= i1 then i2 = i2 + 1 end  -- two distinct hands
+    return { Rules.CATEGORIES[i1], Rules.CATEGORIES[i2] }
   end
+  local schedule = {}
+  for turn = 1, 3 do
+    schedule[turn] = { hands = pick_two(), cond = { roll_cond(), roll_cond() } }
+  end
+  -- turn_index starts at 1 (the use turn is turn 1); effects.tick advances it.
   Effects.add(state, "cybernetic", 3,
-    { hacks = hacks, turn_index = 0, no_carry = true }, "cybernetic")
-  return { ok=true, msg="Cybernetic: hacked "..picks[1].." & "..picks[2].." for 3 turns." }
+    { schedule = schedule, turn_index = 1, no_carry = true }, "cybernetic")
+  local h = schedule[1].hands
+  return { ok=true, msg="Cybernetic: hacked "..h[1].." & "..h[2].." (re-rolls each turn, 3 turns)." }
 end
 
 -- ── The Flush (Legendary) ────────────────────────────────────────────────────
 -- The next Flush played scores double, but only if the current attacking hand
 -- is also a Flush. Consumed (flag cleared) by scoring.lua when a Flush is played.
+-- The Flush (2.9, reworked): on use it immediately scores a Flush's award at the
+-- current threshold — no cards need to be played. Doubled if the current attack
+-- is also Flush. Returns auto_score so main.lua can run the streak (1.1) and
+-- threshold-win (1.2) checks. The joker is consumed by J.use.
 function E.flush_joker(state, ctx)
-  -- TODO: THE FLUSH REWORK — awaiting design spec (2.16). Current implementation
-  -- preserved as-is and is safe to use.
-  state.jokers.flush_active = true
-  return { ok=true, msg="The Flush: next Flush played scores double if it blocks the attack." }
+  local Scoring = require("scoring")
+  state.meta = state.meta or {}
+  local t = state.meta.threshold or 1
+  local pts = Scoring.get_award(t, "Flush")
+  local doubled = false
+  if state.combat and state.combat.current_attack == "Flush" then
+    pts = pts * 2
+    doubled = true
+  end
+  state.meta.score = (state.meta.score or 0) + pts
+  state.jokers.flush_active = nil  -- legacy flag, no longer used
+  return {
+    ok = true,
+    msg = "The Flush: +"..pts.." pts"..(doubled and " (×2 vs Flush attack)" or "")..".",
+    auto_score = "Flush",
+    points = pts,
+  }
 end
 
 -- ── The Trader (Legendary) ───────────────────────────────────────────────────
@@ -392,6 +427,11 @@ end
 -- ── Golden Joker (Mythic, auto-use on acquire) ───────────────────────────────
 -- Auto-scores a random already-marked hand at double its award value the moment
 -- it enters the joker hand (wired in jokers.lua J.gain_joker).
+-- Golden Joker (2.8, reworked): auto-scores a random marked hand at its NORMAL
+-- award (was double). It also flags that hand so that if the player MANUALLY
+-- plays the same hand type on the same turn, that copy scores double (handled in
+-- main.lua). Returns auto_score so main.lua can run the streak (2.8.2) and
+-- threshold-win (2.8.1) checks.
 function E.golden(state, ctx)
   local Scoring = require("scoring")
   local played = ctx and ctx.playedHands
@@ -404,9 +444,15 @@ function E.golden(state, ctx)
   if #marked == 0 then return { ok=true, msg="Golden Joker: no completed hands yet." } end
   table.sort(marked)
   local chosen = marked[rand_index(ctx and ctx.rng, #marked)]
-  Scoring.apply_award(state, chosen)  -- double = score it twice
-  Scoring.apply_award(state, chosen)
-  return { ok=true, msg="Golden Joker: auto-scored "..chosen.." (×2)." }
+  Scoring.apply_award(state, chosen)  -- 2.8.3: NORMAL points (single award)
+  -- Mark this hand type for a same-turn manual-play double, and flag the
+  -- auto-score so main.lua can run the streak (2.8.2) + win (2.8.1) checks even
+  -- when Golden fires on acquisition (inside gain_joker, not via the J key).
+  state.combat = state.combat or {}
+  state.combat.golden_double = chosen
+  state.combat.golden_streak_pending = chosen
+  return { ok=true, msg="Golden Joker: auto-scored "..chosen..". Replay it this turn for ×2.",
+           auto_score = chosen }
 end
 
 -- ── Galaxy Joker (Mythic) ────────────────────────────────────────────────────
@@ -419,8 +465,11 @@ function E.galaxy(state, ctx)
     for k in pairs(ctx.playedHands) do table.insert(keys, k) end
     for _, k in ipairs(keys) do ctx.playedHands[k] = nil end
   end
+  -- 2.6: Galaxy also resets the score to 0.
+  state.meta = state.meta or {}
+  state.meta.score = 0
   Effects.add(state, "score_multiplier", 999, { mult = 1.5, no_carry = true }, "galaxy")
-  return { ok=true, msg="Galaxy: checklist reset. All hands score ×1.5 this threshold." }
+  return { ok=true, msg="Galaxy: checklist & score reset. All hands score ×1.5 this threshold." }
 end
 
 -- ── Peacock Joker (Mythic) ───────────────────────────────────────────────────
@@ -431,14 +480,13 @@ function E.peacock(state, ctx)
   return { ok=true, msg="Peacock: extra turn every 5 turns this threshold." }
 end
 
--- ── Four of Clubs (Mythic, triggered) — dispatch fix (2.12) ──────────────────
--- TODO: FOUR OF CLUBS REWORK — awaiting design spec (2.15). For now the *use*
--- path must not silently no-op (the old "No effect" bug). The scoring bonus
--- (hands containing a Club or a 4 score extra) is applied in scoring.lua while
--- the joker is in hand; using it simply confirms the passive is active. The
--- rework should land HERE.
+-- ── Four of Clubs (Mythic, triggered) — activate-on-use (2.5) ────────────────
+-- The "+6 per hand containing a Club or a 4 (doubling per threshold)" bonus is
+-- INERT until the player explicitly uses the joker. On use it sets an active flag
+-- that scoring.lua reads; before use it does nothing.
 function E.fourofclubs(state, ctx)
-  return { ok=true, msg="Four of Clubs: passive active — Club/4 hands score extra." }
+  state.jokers.fourofclubs_active = true
+  return { ok=true, msg="Four of Clubs: activated — Club/4 hands now score extra." }
 end
 
 -- ── Cute Joker (Epic) — reworked (2.4) ───────────────────────────────────────

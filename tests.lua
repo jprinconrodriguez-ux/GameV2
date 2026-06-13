@@ -652,65 +652,78 @@ do
 end
 print("M4 purge: passed")
 
--- ── M4 4.4: Cybernetic states (per-turn read, double, protected, lose) ───────
+-- ── 2.10: Cybernetic rework (schedule of 3 turns; D/P/L conditions) ──────────
 do
   local S = {}
   Scoring.init(S)
   Jokers.init(S, love.math)
-  Effects.add(S, "cybernetic", 3,
-    { hacks = { ["Pair"] = { "d", "p", "l" } }, turn_index = 1, no_carry = true },
-    "cybernetic")
-  -- turn 1: "d" doubles the award (Pair T1 = 2 → 4)
-  assert(Scoring.apply_award(S, "Pair") == 4, "double state should double the award")
+  -- Hand-built schedule: turn 1 Pair=d, turn 2 Pair=p, turn 3 Pair=l.
+  Effects.add(S, "cybernetic", 3, {
+    schedule = {
+      { hands = { "Pair", "Flush" }, cond = { "d", "p" } },
+      { hands = { "Pair", "Flush" }, cond = { "p", "d" } },
+      { hands = { "Pair", "Flush" }, cond = { "l", "d" } },
+    },
+    turn_index = 1, no_carry = true,
+  }, "cybernetic")
+  -- turn 1: Pair "d" doubles the award (Pair T1 = 2 → 4)
+  assert(Scoring.apply_award(S, "Pair") == 4, "Double should double the award")
   S.meta.score = 0
-  -- turn 2: "p" protects against the attack
+  -- turn 2: Pair "p" protects against the attack
   Effects.get(S, "cybernetic").turn_index = 2
   S.combat = { current_attack = "Pair" }
   local res = Attacks.resolve(S, Scoring)
-  assert(res.protected, "protected state should block the attack")
+  assert(res.protected, "Protected should block the attack")
   assert(S.meta.score == 0, "protected attack must not change score")
-  -- turn 3: "l" zeroes the award
+  -- turn 3: Pair "l" loses its T1 base penalty (4) → award 2 - 4 = -2
   Effects.get(S, "cybernetic").turn_index = 3
-  assert(Scoring.apply_award(S, "Pair") == 0, "lose state should award 0 points")
-  -- no_carry removal on threshold advance
+  assert(Scoring.apply_award(S, "Pair") == 2 - 4, "Lose should subtract the T1 penalty (4)")
   Effects.clear_tag(S, "no_carry")
   assert(not Effects.has(S, "cybernetic"), "cybernetic must not carry thresholds")
 
-  -- Generated payload shape: 2 distinct hands × 3 valid per-turn states.
-  local S2 = {}
-  Jokers.init(S2, love.math)
-  FX.cybernetic(S2, { rng = love.math })
-  local pay = Effects.get(S2, "cybernetic")
-  assert(pay.no_carry == true and pay.turn_index == 0, "cybernetic payload defaults")
-  local hands = 0
-  for h, sts in pairs(pay.hacks) do
-    hands = hands + 1
-    assert(#sts == 3, "each hacked hand needs 3 turn states")
-    for _, st in ipairs(sts) do
-      assert(st == "n" or st == "d" or st == "p" or st == "l", "invalid state key "..tostring(st))
+  -- Generated payload: 3-turn schedule, 2 different hands/turn, conditions ∈ {d,p,l}.
+  for _ = 1, 50 do
+    local S2 = {}
+    Jokers.init(S2, love.math)
+    FX.cybernetic(S2, { rng = love.math })
+    local pay = Effects.get(S2, "cybernetic")
+    assert(pay.no_carry == true and pay.turn_index == 1, "cybernetic payload defaults")
+    assert(#pay.schedule == 3, "cybernetic schedule must cover 3 turns")
+    for _, entry in ipairs(pay.schedule) do
+      assert(#entry.hands == 2 and entry.hands[1] ~= entry.hands[2],
+        "each turn must hack two DIFFERENT hands")
+      for _, c in ipairs(entry.cond) do
+        assert(c == "d" or c == "p" or c == "l", "condition must be one of d/p/l (no Normal), got "..tostring(c))
+      end
     end
   end
-  assert(hands == 2, "cybernetic must hack exactly 2 hands")
 end
-print("M4 cybernetic: passed")
+print("2.10 cybernetic rework: passed")
 
--- ── M4 4.5: The Flush doubles only when the attack is also a Flush ───────────
+-- ── 2.9: The Flush rework — instant score on use (doubled vs Flush attack) ───
 do
   local S = {}
   Scoring.init(S)
   Jokers.init(S, love.math)
-  FX.flush_joker(S, {})
-  assert(S.jokers.flush_active == true, "flush joker should arm the flag")
-  S.combat = { current_attack = "Flush" }
-  assert(Scoring.apply_award(S, "Flush") == 16, "Flush vs Flush attack should double (T1: 8→16)")
-  assert(S.jokers.flush_active == nil, "flag consumed after a Flush play")
-  S.meta.score = 0
-  FX.flush_joker(S, {})
+  -- No attack / non-flush attack → flush award at threshold (T1 = 8), no doubling.
   S.combat = { current_attack = "Pair" }
-  assert(Scoring.apply_award(S, "Flush") == 8, "no double when attack is not a Flush")
-  assert(S.jokers.flush_active == nil, "flag consumed even without doubling")
+  local r = FX.flush_joker(S, {})
+  assert(r.ok and r.auto_score == "Flush", "flush joker should report an auto_score")
+  assert(S.meta.score == 8, "The Flush should instantly score the T1 flush award (8)")
+  assert(r.points == 8, "result points should be 8")
+  -- Attack is Flush → doubled.
+  S.meta.score = 0
+  S.combat = { current_attack = "Flush" }
+  FX.flush_joker(S, {})
+  assert(S.meta.score == 16, "vs a Flush attack the score should double (8→16)")
+  -- Threshold scaling: T2 = 16.
+  S.meta.score = 0
+  S.meta.threshold = 2
+  S.combat = { current_attack = "Pair" }
+  FX.flush_joker(S, {})
+  assert(S.meta.score == 16, "T2 flush award should be 16")
 end
-print("M4 the flush: passed")
+print("2.9 the flush rework: passed")
 
 -- ── M4 4.5: The Trader unmarks a hand; next hand scores double ───────────────
 do
@@ -731,7 +744,7 @@ do
 end
 print("M4 the trader: passed")
 
--- ── M4 4.5: Four of Clubs bonus (+6 at T1, doubling per threshold) ───────────
+-- ── 2.5: Four of Clubs bonus only after the joker is USED ────────────────────
 do
   local S = {}
   Scoring.init(S)
@@ -740,31 +753,40 @@ do
   local club_cards = { {suit="♣", rank="9"}, {suit="♥", rank="9"} }
   local four_cards = { {suit="♥", rank="4"}, {suit="♦", rank="4"} }
   local plain      = { {suit="♥", rank="9"}, {suit="♦", rank="9"} }
-  assert(Scoring.apply_award(S, "Pair", club_cards) == 2 + 6,  "T1 club bonus = +6")
-  S.meta.threshold = 2
+  -- Inert before use: no bonus even though the joker is in hand.
+  assert(Scoring.apply_award(S, "Pair", club_cards) == 2, "no bonus before the joker is used")
+  -- Activate via use.
+  FX.fourofclubs(S, {})
+  assert(S.jokers.fourofclubs_active == true, "using Four of Clubs should activate it")
+  S.meta.score = 0
+  assert(Scoring.apply_award(S, "Pair", club_cards) == 2 + 6,  "T1 club bonus = +6 after use")
+  S.meta.threshold = 2; S.meta.score = 0
   assert(Scoring.apply_award(S, "Pair", four_cards) == 4 + 12, "T2 four-rank bonus = +12")
-  S.meta.threshold = 3
+  S.meta.threshold = 3; S.meta.score = 0
   assert(Scoring.apply_award(S, "Pair", four_cards) == 8 + 24, "T3 bonus = +24")
-  S.meta.threshold = 1
+  S.meta.threshold = 1; S.meta.score = 0
   assert(Scoring.apply_award(S, "Pair", plain) == 2, "no club/4 → no bonus")
-  S.jokers.hand = {}
-  assert(Scoring.apply_award(S, "Pair", club_cards) == 2, "no bonus without the joker in hand")
 end
-print("M4 four of clubs: passed")
+print("2.5 four of clubs activate-on-use: passed")
 
--- ── M4 4.5: Golden Joker auto-scores a marked hand at double value ───────────
+-- ── 2.8: Golden auto-score = NORMAL; same-turn manual copy = DOUBLE ───────────
 do
   local S = {}
   Scoring.init(S)
   Jokers.init(S, love.math)
   local r = FX.golden(S, { rng = love.math, playedHands = { ["Pair"] = true } })
   assert(r.ok, "golden should succeed")
-  assert(S.meta.score == 4, "golden scores the marked hand twice (T1 Pair: 2×2=4)")
-  S.meta.score = 0
+  -- 2.8.3: auto-score is NORMAL points (T1 Pair = 2), not double.
+  assert(S.meta.score == 2, "golden auto-score should be normal points (2), got "..S.meta.score)
+  assert(r.auto_score == "Pair", "golden should report its auto-scored hand")
+  assert(S.combat.golden_double == "Pair", "golden should flag the hand for a same-turn double")
+  -- A subsequent manual Pair would score double (the doubling itself lives in main.lua,
+  -- but the flag is the contract). Empty checklist → nothing scored.
+  S.meta.score = 0; S.combat.golden_double = nil
   r = FX.golden(S, { rng = love.math, playedHands = {} })
   assert(r.ok and S.meta.score == 0, "golden with empty checklist scores nothing")
 end
-print("M4 golden joker: passed")
+print("2.8 golden joker order: passed")
 
 -- ── M4 4.5: Galaxy resets the checklist and applies ×1.5 ─────────────────────
 do
@@ -978,5 +1000,92 @@ do
   assert(not S2.jokers.steal_choice_pending, "cancel_steal should clear the pending flag")
 end
 print("2.7 steal disable/cancel: passed")
+
+-- ── 4.1 / 5.1: T4+ attack probability table (T4 and T5 share it; sums to 100) ─
+do
+  local expected = {
+    ["High Card"]=11, ["Pair"]=12, ["Two Pair"]=12, ["Three of a Kind"]=13,
+    ["Flush"]=14, ["Straight"]=13, ["Full House"]=14, ["Four of a Kind"]=11,
+  }
+  for _, t in ipairs({ 4, 5, 9 }) do
+    local probs = Attacks.probs_for_threshold(t)
+    local sum = 0
+    for hand, v in pairs(expected) do
+      assert(probs[hand] == v, "T4+ mismatch ("..t..") on "..hand..": expected "..v.." got "..tostring(probs[hand]))
+    end
+    for _, w in pairs(probs) do sum = sum + w end
+    assert(sum == 100, "T4+ probabilities must sum to 100, got "..sum)
+  end
+end
+print("4.1 T4+ attack probabilities: passed")
+
+-- ── 4.2: T4+ rarity weights differ from the base table and sum to 100 ────────
+do
+  local REG = require("joker_registry")
+  local base = REG.weights_for_threshold(1)
+  local t4   = REG.weights_for_threshold(4)
+  assert(base.common == 29 and t4.common == 33, "weights_for_threshold must switch tables at T4")
+  local s = 0
+  for _, w in pairs(t4) do s = s + w end
+  assert(s == 100, "T4+ rarity weights must sum to 100, got "..s)
+end
+print("4.2 T4+ rarity weights: passed")
+
+-- ── 5.6: Steal always reveals two DIFFERENT joker ids ────────────────────────
+do
+  local REG = require("joker_registry")
+  for _ = 1, 200 do
+    local S = {}
+    Jokers.init(S, love.math)
+    Jokers.ensure_pool(S, love.math, 12)
+    FX.steal(S, { rng = love.math })
+    local ids = S.jokers.steal_pending.ids
+    assert(#ids == 2, "steal should reveal 2 jokers from a varied pool")
+    assert(ids[1] ~= ids[2], "the two revealed jokers must have different ids ("..ids[1]..")")
+  end
+end
+print("5.6 steal distinct ids: passed")
+
+-- ── 2.6: Galaxy resets the score to 0 in addition to the checklist ───────────
+do
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  S.meta.score = 137
+  local played = { ["Pair"] = true, ["Flush"] = true }
+  FX.galaxy(S, { playedHands = played })
+  assert(S.meta.score == 0, "Galaxy must reset the score to 0, got "..S.meta.score)
+  assert(next(played) == nil, "Galaxy must also reset the checklist")
+end
+print("2.6 galaxy score reset: passed")
+
+-- ── v4.2 save/load: new joker state round-trips ──────────────────────────────
+do
+  local deck = Deck.new(1)
+  GS:reset()
+  local S = {}
+  Scoring.init(S)
+  Jokers.init(S, love.math)
+  local hand = deck:draw(5)
+  S.meta.streak = 4
+  S.jokers.fourofclubs_active = true
+  S.jokers.food_acquired = true
+  S.jokers.fib_counts = { 2, 5 }
+  S.jokers.steal_disabled = { "bicycle" }
+  S.jokers.pool = { "skull", "bee" }
+
+  local saved = SaveLoad.build_state(deck, hand, GS, S, {})
+  local S2 = {}
+  GS:reset()
+  SaveLoad.apply_state(saved, Deck.new(1), GS, S2, {}, Scoring, Jokers)
+
+  assert(S2.meta.streak == 4, "streak lost in round trip")
+  assert(S2.jokers.fourofclubs_active == true, "fourofclubs_active lost in round trip")
+  assert(S2.jokers.food_acquired == true, "food_acquired lost in round trip")
+  assert(S2.jokers.fib_counts[1] == 2 and S2.jokers.fib_counts[2] == 5, "fib_counts lost")
+  assert(S2.jokers.steal_disabled[1] == "bicycle", "steal_disabled lost")
+  assert(S2.jokers.pool[1] == "skull" and S2.jokers.pool[2] == "bee", "pool lost")
+end
+print("v4.2 save/load round trip: passed")
 
 print("\nAll tests passed.")
